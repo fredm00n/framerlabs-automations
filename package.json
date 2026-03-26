@@ -2,7 +2,7 @@
   "name": "claude-automations",
   "type": "module",
   "scripts": {
-    "framer-templates": "tsx scripts/framer-templates.ts"
+    "framer-templates": "python3 scripts/framer_templates.py"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
