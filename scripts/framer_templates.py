@@ -73,20 +73,30 @@ def fetch_from_defuddle() -> list[dict]:
     seen: set[str] = set()
     templates = []
 
-    # Defuddle returns Markdown. Template links look like:
-    #   [Template Name](https://www.framer.com/marketplace/templates/slug/)
-    # Image links are prefixed with ! so we exclude them with a negative lookbehind.
+    # Defuddle returns Markdown. Each entry looks like:
+    #   [Title](https://www.framer.com/marketplace/templates/slug/)
+    #   $99        ← or "Free"
+    #   [Author Name](https://www.framer.com/@author-slug/)
+    #
+    # [^\[]* captures the gap between template link and author link (price + whitespace).
+    # Negative lookbehind on ! excludes image links.
     pattern = re.compile(
         r'(?<!!)\[([^\]]+)\]\(https://www\.framer\.com/marketplace/templates/([a-z0-9][a-z0-9-]+)/\)'
+        r'([^\[]*)'
+        r'\[([^\]]+)\]\(https://www\.framer\.com/@[^)]+/\)'
     )
-    for title, slug in pattern.findall(md):
-        if slug not in seen:
-            seen.add(slug)
-            templates.append({
-                'slug': slug,
-                'title': title,
-                'url': f'https://www.framer.com/marketplace/templates/{slug}/',
-            })
+    for title, slug, gap, author in pattern.findall(md):
+        if slug in seen:
+            continue
+        seen.add(slug)
+        price_match = re.search(r'\$[\d,]+|Free', gap)
+        templates.append({
+            'slug': slug,
+            'title': title,
+            'author': author,
+            'price': price_match.group(0) if price_match else '',
+            'url': f'https://www.framer.com/marketplace/templates/{slug}/',
+        })
 
     print(f'Parsed {len(templates)} templates from defuddle.')
     return templates
@@ -128,6 +138,8 @@ def save_to_notion(template: dict) -> None:
                 'Name': {'title': [{'text': {'content': template['title']}}]},
                 'Slug': {'rich_text': [{'text': {'content': template['slug']}}]},
                 'URL': {'url': template['url']},
+                'Author': {'rich_text': [{'text': {'content': template.get('author', '')}}]},
+                'Price': {'rich_text': [{'text': {'content': template.get('price', '')}}]},
                 'Discovered': {'date': {'start': date.today().isoformat()}},
             },
         },
@@ -143,7 +155,7 @@ def notify_discord(template: dict) -> None:
     try:
         http_post(
             os.environ['DISCORD_WEBHOOK_URL'],
-            {'content': f"New Framer template: **{template['title']}** — {template['url']}"},
+            {'content': f"New Framer template: **{template['title']}** by {template.get('author', 'unknown')} ({template.get('price', '?')}) — {template['url']}"},
         )
     except Exception as e:
         print(f'Discord notification failed for "{template["title"]}": {e}')
