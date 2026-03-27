@@ -106,7 +106,7 @@ def fetch_from_defuddle() -> list[dict]:
         if slug in seen:
             continue
         seen.add(slug)
-        price_match = re.search(r'\$[\d,.]+|Free', gap)
+        price_match = re.search(r'[$€£][\d,.]+|Free', gap)
         templates.append({
             'slug': slug,
             'title': title,
