@@ -6,6 +6,7 @@ State is persisted in a Notion database.
 import json
 import os
 import re
+import urllib.parse
 import urllib.request
 import urllib.error
 from datetime import date
@@ -74,6 +75,21 @@ def fetch_from_defuddle() -> list[dict]:
     seen: set[str] = set()
     templates = []
 
+    # Build a slug → thumbnail URL map from image link blocks.
+    # Defuddle renders each entry with a linked image block on its own line:
+    #   [![Thumbnail 1 for Title...](proxy_url) ![Thumbnail 2 ...](proxy_url2)](template_url)
+    # We extract the first thumbnail's proxy URL and decode the inner blob URL.
+    thumb_pattern = re.compile(
+        r'\[!\[Thumbnail 1 for [^\]]+\]\(([^)]+)\).*?\]'
+        r'\(https://www\.framer\.com/marketplace/templates/([a-z0-9][a-z0-9-]+)/\)'
+    )
+    thumbnails: dict[str, str] = {}
+    for proxy_url, slug in thumb_pattern.findall(md):
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(proxy_url).query)
+        direct = qs.get('url', [''])[0]
+        if direct:
+            thumbnails[slug] = direct
+
     # Defuddle returns Markdown. Each entry looks like:
     #   [Title](https://www.framer.com/marketplace/templates/slug/)
     #   $99        ← or "Free"
@@ -97,6 +113,7 @@ def fetch_from_defuddle() -> list[dict]:
             'author': author,
             'price': price_match.group(0) if price_match else '',
             'url': f'https://www.framer.com/marketplace/templates/{slug}/',
+            'thumbnail': thumbnails.get(slug, ''),
         })
 
     print(f'Parsed {len(templates)} templates from defuddle.')
@@ -133,21 +150,34 @@ def get_seen_slugs() -> set[str]:
 
 
 def save_to_notion(template: dict) -> None:
-    http_post(
-        'https://api.notion.com/v1/pages',
-        {
-            'parent': {'database_id': os.environ['NOTION_DATABASE_ID']},
-            'properties': {
-                'Name': {'title': [{'text': {'content': template['title']}}]},
-                'Slug': {'rich_text': [{'text': {'content': template['slug']}}]},
-                'URL': {'url': template['url']},
-                'Author': {'rich_text': [{'text': {'content': template.get('author', '')}}]},
-                'Price': {'rich_text': [{'text': {'content': template.get('price', '')}}]},
-                'Discovered': {'date': {'start': date.today().isoformat()}},
-            },
-        },
-        headers=notion_headers(),
-    )
+    props: dict = {
+        'Name': {'title': [{'text': {'content': template['title']}}]},
+        'Slug': {'rich_text': [{'text': {'content': template['slug']}}]},
+        'URL': {'url': template['url']},
+        'Author': {'rich_text': [{'text': {'content': template.get('author', '')}}]},
+        'Price': {'rich_text': [{'text': {'content': template.get('price', '')}}]},
+        'Discovered': {'date': {'start': date.today().isoformat()}},
+    }
+    if template.get('thumbnail'):
+        props['Thumbnail'] = {'url': template['thumbnail']}
+
+    try:
+        http_post(
+            'https://api.notion.com/v1/pages',
+            {'parent': {'database_id': os.environ['NOTION_DATABASE_ID']}, 'properties': props},
+            headers=notion_headers(),
+        )
+    except urllib.error.HTTPError as e:
+        if e.code == 400 and 'Thumbnail' in props:
+            # Thumbnail property may not exist in DB schema yet; retry without it
+            props.pop('Thumbnail')
+            http_post(
+                'https://api.notion.com/v1/pages',
+                {'parent': {'database_id': os.environ['NOTION_DATABASE_ID']}, 'properties': props},
+                headers=notion_headers(),
+            )
+        else:
+            raise
 
 
 # ---------------------------------------------------------------------------
@@ -155,11 +185,15 @@ def save_to_notion(template: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def notify_discord(template: dict) -> None:
+    embed: dict = {
+        'title': template['title'],
+        'url': template['url'],
+        'description': f"by {template.get('author', 'unknown')} • {template.get('price', '?')}",
+    }
+    if template.get('thumbnail'):
+        embed['image'] = {'url': template['thumbnail']}
     try:
-        http_post(
-            os.environ['DISCORD_WEBHOOK_URL'],
-            {'content': f"New Framer template: **{template['title']}** by {template.get('author', 'unknown')} ({template.get('price', '?')}) — {template['url']}"},
-        )
+        http_post(os.environ['DISCORD_WEBHOOK_URL'], {'embeds': [embed]})
     except Exception as e:
         print(f'Discord notification failed for "{template["title"]}": {e}')
 
