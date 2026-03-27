@@ -124,6 +124,7 @@ def _parse_rsc_body(body: str, seen: set, templates: list) -> None:
                 price = price_raw[1:] if price_raw.startswith('$$') else price_raw
                 creator = item.get('creator') or {}
                 author = creator.get('name', '')
+                author_slug = creator.get('slug', '')
                 # RSC encodes Date objects with a "$D" prefix — strip it
                 published_raw = item.get('publishedAt', '')
                 published_at = published_raw[2:] if published_raw.startswith('$D') else published_raw
@@ -131,6 +132,7 @@ def _parse_rsc_body(body: str, seen: set, templates: list) -> None:
                     'slug': slug,
                     'title': item.get('title', ''),
                     'author': author,
+                    'author_slug': author_slug,
                     'price': price,
                     'url': f'https://www.framer.com/marketplace/templates/{slug}/',
                     'thumbnail': item.get('thumbnail', ''),
@@ -231,10 +233,18 @@ def save_to_notion(template: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def notify_discord(template: dict) -> None:
+    author = template.get('author', 'unknown')
+    author_slug = template.get('author_slug', '')
+    price = template.get('price', '?')
+    if author_slug:
+        author_text = f"[{author}](https://www.framer.com/marketplace/profiles/{author_slug}/)"
+    else:
+        author_text = author
     embed: dict = {
         'title': template['title'],
         'url': template['url'],
-        'description': f"by {template.get('author', 'unknown')} • {template.get('price', '?')}",
+        'description': f"by {author_text} · **{price}**",
+        'color': 0x5865F2,
     }
     if template.get('thumbnail'):
         embed['image'] = {'url': template['thumbnail']}
