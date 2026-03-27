@@ -33,9 +33,11 @@ If you find a clear, self-contained improvement with no existing open PR coverin
 
 1. Create a branch: `claude/improve-<script>-<short-description>`
 2. Implement the change
-3. Commit with a descriptive message
-4. Push and open a PR against main for human review
-5. Update the script's **Deferred improvements** section in CLAUDE.md with anything
+3. Update or add tests in `tests/` for any modified or new functions (see Testing rules in CLAUDE.md)
+4. Run tests locally and fix any failures: `python3 -m unittest discover -s tests -p "test_*.py" -v`
+5. Commit with a descriptive message
+6. Push and open a PR against main for human review
+7. Update the script's **Deferred improvements** section in CLAUDE.md with anything
    considered but not implemented, and why — commit this to the same branch
 
 If no improvements are needed, exit cleanly.
