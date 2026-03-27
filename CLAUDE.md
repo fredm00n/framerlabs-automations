@@ -5,6 +5,11 @@ Each script monitors something, persists state in Notion, and notifies via Disco
 
 ## Architecture
 
+### Two-Tier Execution
+
+- **Tier 1 — GitHub Actions cron** (every 2 hours): Runs Python monitoring scripts automatically. No LLM needed, no token cost. Defined in `.github/workflows/framer-monitor.yml`. Secrets are stored as GitHub Actions repository secrets.
+- **Tier 2 — Claude Code VM** (1x/day): Reviews code and recent GitHub Actions run logs for improvements, checks for existing open PRs, and implements self-contained fixes or enhancements. Defined in `SCHEDULER.md`.
+
 ### Runtime
 Scripts are written in **Python 3** (stdlib only, no pip dependencies).
 Node.js is available but has no DNS access in the scheduler VM — do not use it for network calls.
@@ -93,7 +98,7 @@ Each script gets its own Notion database as a sub-page under this parent.
 
 ## Scheduled task
 
-The scheduler runs this repo periodically. See [SCHEDULER.md](./SCHEDULER.md) for the full operational instructions (which scripts to run, self-improvement loop, PR conventions).
+Script execution (Tier 1) is handled by GitHub Actions cron — see `.github/workflows/framer-monitor.yml`. The Claude Code VM scheduler (Tier 2) handles only the self-improvement loop. See [SCHEDULER.md](./SCHEDULER.md) for the full operational instructions.
 
 **Scheduler UI prompt** (set once, never changes):
 ```
@@ -113,10 +118,9 @@ Read CLAUDE.md and SCHEDULER.md, then follow the instructions in SCHEDULER.md.
 
 1. Create `scripts/<name>.py`
 2. Create a Notion DB under the Claude Automations parent page
-3. Add the DB ID to `.env`
+3. Add the DB ID to `.env` and as a GitHub Actions repository secret
 4. Add a `"<name>": "python3 scripts/<name>.py"` entry to `package.json` scripts
-5. Add `python3 scripts/<name>.py` to the Step 1 list in `SCHEDULER.md`
+5. Add the script to the GitHub Actions cron workflow (`.github/workflows/framer-monitor.yml` or a new workflow file if it needs a different schedule)
 6. Create `tests/test_<name>.py` covering the script's core functions
-7. Set up a scheduled task pointing at the new script
 
 **Notion DB schema:** When adding a new tracked field to a script, update the Notion DB schema in the same PR via MCP (use the `notion-update-data-source` tool). Do not add runtime schema-sync logic — schema updates belong at implementation time, not on every run.
