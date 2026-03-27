@@ -38,22 +38,19 @@ No install step needed — stdlib only.
 ### `scripts/framer_templates.py`
 Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort=recent) for new templates.
 
-- **Source:** defuddle.md renders the page and returns clean Markdown (Framer loads templates client-side, so raw HTML has no template data)
+- **Source:** Framer's Next.js RSC endpoint — fetched directly with `Rsc: 1` header, returns structured component data including all templates sorted by recent (no headless browser needed)
 - **State:** Notion DB `Framer Templates` (ID in `NOTION_DATABASE_ID`)
 - **Notifications:** Discord webhook on each new template
 - **First run:** seeds the DB silently — no Discord spam
-- **Fields tracked:** title, slug, URL, author, price, discovered date
+- **Fields tracked:** title, slug, URL, author, price, discovered datetime
 
 **Deferred improvements:**
-- Categories/tags — Framer may expose these but they weren't visible in defuddle's markdown output; worth re-checking if the page structure changes
-- Pagination — defuddle renders what Framer shows on initial load; if the marketplace lazy-loads beyond the first batch, older items on a given run could be missed (low risk since we sort=recent and run periodically)
-- Existing Notion records lack the `Thumbnail` URL property — only new records saved after this change will include it. A one-time backfill via the Notion API would populate old rows, but was skipped as low priority.
-- Template thumbnail URL — not captured currently; could enrich Discord notifications (open PR: #8)
-- Pagination — defuddle renders what Framer shows on initial load; if the marketplace lazy-loads beyond the first batch, older items on a given run could be missed (low risk since we sort=recent and run periodically)
-- HTTP retry logic — transient network errors (defuddle, Notion, Discord) cause the whole run to abort; could add simple exponential backoff. Not added to keep stdlib-only code simple; scheduler will retry on next scheduled run
-- Retry logic for transient HTTP failures — a simple retry with backoff on `urllib.error.URLError` would improve resilience; skipped to keep the script minimal
+- Categories/tags — present in the RSC payload; not extracted yet as they weren't a priority
+- Pagination — default RSC fetch returns ~20 templates; each `?page=N` adds 20 more cumulatively. Low risk since we sort=recent and run periodically; new additions will be caught within one run
+- Existing Notion records lack the `Thumbnail` URL property — only new records saved after #8 include it. Backfill via Notion API is possible but was skipped as low priority
+- RSC format is an internal Next.js mechanism — Framer could change the response structure without notice. If parsing breaks (< 5 templates warning fires), inspect the raw RSC payload and update `_extract_json_object` / the `"item":{"id":` search key
+- HTTP retry logic — transient network errors cause the whole run to abort; could add simple exponential backoff. Not added to keep stdlib-only code simple; scheduler will retry on next scheduled run
 - Richer HTTP error reporting — printing the response body on Notion API errors (4xx/5xx) would aid debugging; skipped as the existing error messages are sufficient for now
-- Author slug capture — the regex processes author URLs but discards the slug portion; could be stored as a separate field for deduplication or linking
 
 ---
 

@@ -6,10 +6,9 @@ State is persisted in a Notion database.
 import json
 import os
 import re
-import urllib.parse
 import urllib.request
 import urllib.error
-from datetime import date
+from datetime import datetime
 
 
 def load_dotenv() -> None:
@@ -64,62 +63,84 @@ def notion_headers() -> dict:
 # ---------------------------------------------------------------------------
 
 def fetch_framer_templates() -> list[dict]:
-    print('Fetching Framer marketplace via defuddle...')
-    # Framer loads templates client-side (no SSR data), so we use defuddle which
-    # renders the page and returns clean Markdown with all template links.
-    return fetch_from_defuddle()
+    return fetch_from_rsc()
 
 
-def fetch_from_defuddle() -> list[dict]:
-    md = http_get('https://defuddle.md/www.framer.com/marketplace/templates/?sort=recent')
+def fetch_from_rsc() -> list[dict]:
+    # Framer uses Next.js RSC (React Server Components). Fetching the marketplace
+    # URL with Rsc: 1 header returns a structured component stream that includes
+    # all templates (including the newest) directly from the server — no JavaScript
+    # execution needed. The defuddle approach missed the 1-2 newest templates because
+    # they are hydrated after the initial render that defuddle captured.
+    print('Fetching Framer marketplace via RSC...')
+    body = http_get(
+        'https://www.framer.com/marketplace/templates/?sort=recent',
+        headers={
+            'Accept': 'text/x-component',
+            'Rsc': '1',
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        }
+    )
+
     seen: set[str] = set()
-    templates = []
+    templates: list[dict] = []
+    search = '"item":{"id":'
+    pos = 0
+    while True:
+        idx = body.find(search, pos)
+        if idx == -1:
+            break
+        try:
+            item = _extract_json_object(body, idx + len('"item":'))
+            slug = item.get('slug', '')
+            if slug and slug not in seen:
+                seen.add(slug)
+                price_raw = item.get('price', '')
+                # RSC encodes literal "$" as "$$" — strip the escape prefix
+                price = price_raw[1:] if price_raw.startswith('$$') else price_raw
+                creator = item.get('creator') or {}
+                author = creator.get('name', '')
+                templates.append({
+                    'slug': slug,
+                    'title': item.get('title', ''),
+                    'author': author,
+                    'price': price,
+                    'url': f'https://www.framer.com/marketplace/templates/{slug}/',
+                    'thumbnail': item.get('thumbnail', ''),
+                })
+        except (ValueError, KeyError):
+            pass
+        pos = idx + 1
 
-    # Build a slug → thumbnail URL map from image link blocks.
-    # Defuddle renders each entry with a linked image block on its own line:
-    #   [![Thumbnail 1 for Title...](proxy_url) ![Thumbnail 2 ...](proxy_url2)](template_url)
-    # We extract the first thumbnail's proxy URL and decode the inner blob URL.
-    thumb_pattern = re.compile(
-        r'\[!\[Thumbnail 1 for [^\]]+\]\(([^)]+)\).*?\]'
-        r'\(https://www\.framer\.com/marketplace/templates/([a-z0-9][a-z0-9-]+)/\)'
-    )
-    thumbnails: dict[str, str] = {}
-    for proxy_url, slug in thumb_pattern.findall(md):
-        qs = urllib.parse.parse_qs(urllib.parse.urlparse(proxy_url).query)
-        direct = qs.get('url', [''])[0]
-        if direct:
-            thumbnails[slug] = direct
-
-    # Defuddle returns Markdown. Each entry looks like:
-    #   [Title](https://www.framer.com/marketplace/templates/slug/)
-    #   $99        ← or "Free"
-    #   [Author Name](https://www.framer.com/@author-slug/)
-    #
-    # [^\[]* captures the gap between template link and author link (price + whitespace).
-    # Negative lookbehind on ! excludes image links.
-    pattern = re.compile(
-        r'(?<!!)\[([^\]]+)\]\(https://www\.framer\.com/marketplace/templates/([a-z0-9][a-z0-9-]+)/\)'
-        r'([^\[]*)'
-        r'\[([^\]]+)\]\(https://www\.framer\.com/@[^)]+/\)'
-    )
-    for title, slug, gap, author in pattern.findall(md):
-        if slug in seen:
-            continue
-        seen.add(slug)
-        price_match = re.search(r'[$€£][\d,.]+|Free', gap)
-        templates.append({
-            'slug': slug,
-            'title': title,
-            'author': author,
-            'price': price_match.group(0) if price_match else '',
-            'url': f'https://www.framer.com/marketplace/templates/{slug}/',
-            'thumbnail': thumbnails.get(slug, ''),
-        })
-
-    print(f'Parsed {len(templates)} templates from defuddle.')
+    print(f'Parsed {len(templates)} templates from RSC.')
     if len(templates) < 5:
-        print(f'WARNING: only {len(templates)} templates parsed — defuddle output may be incomplete.')
+        print(f'WARNING: only {len(templates)} templates parsed — RSC output may be incomplete.')
     return templates
+
+
+def _extract_json_object(s: str, start: int) -> dict:
+    """Extract and parse a balanced JSON object from s starting at position start."""
+    depth = 0
+    i = start
+    in_string = False
+    escape = False
+    while i < len(s):
+        c = s[i]
+        if escape:
+            escape = False
+        elif c == '\\' and in_string:
+            escape = True
+        elif c == '"':
+            in_string = not in_string
+        elif not in_string:
+            if c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0:
+                    return json.loads(s[start:i + 1])
+        i += 1
+    raise ValueError('Unclosed JSON object')
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +177,7 @@ def save_to_notion(template: dict) -> None:
         'URL': {'url': template['url']},
         'Author': {'rich_text': [{'text': {'content': template.get('author', '')}}]},
         'Price': {'rich_text': [{'text': {'content': template.get('price', '')}}]},
-        'Discovered': {'date': {'start': date.today().isoformat()}},
+        'Discovered': {'date': {'start': datetime.now().isoformat()}},
     }
     if template.get('thumbnail'):
         props['Thumbnail'] = {'url': template['thumbnail']}
