@@ -46,7 +46,7 @@ Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort
 
 **Deferred improvements:**
 - Categories/tags — Framer may expose these but they weren't visible in defuddle's markdown output; worth re-checking if the page structure changes
-- Template thumbnail URL — not captured currently; could enrich Discord notifications
+- Thumbnail URL in Notion — thumbnail URLs are now captured and used in Discord embeds, but not persisted to Notion. To add this: create a `Thumbnail` URL property in the Notion DB, then add it to the `save_to_notion` payload
 - Pagination — defuddle renders what Framer shows on initial load; if the marketplace lazy-loads beyond the first batch, older items on a given run could be missed (low risk since we sort=recent and run periodically)
 
 ---

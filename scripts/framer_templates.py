@@ -73,6 +73,18 @@ def fetch_from_defuddle() -> list[dict]:
     seen: set[str] = set()
     templates = []
 
+    # Build slug -> thumbnail URL from image-linked blocks:
+    #   [![Thumbnail 1 for Title...](img_url) ![Thumbnail 2...](img_url2)](template_url)
+    # Anchoring on the last image link ending just before ](template_url) avoids
+    # [^\]]* stopping prematurely at ] inside the second alt-text.
+    thumbnail_map: dict[str, str] = {}
+    thumb_pattern = re.compile(
+        r'!\[[^\]]*\]\(([^)]+)\)\]\(https://www\.framer\.com/marketplace/templates/([a-z0-9][a-z0-9-]+)/\)'
+    )
+    for img_url, slug in thumb_pattern.findall(md):
+        if slug not in thumbnail_map:
+            thumbnail_map[slug] = img_url
+
     # Defuddle returns Markdown. Each entry looks like:
     #   [Title](https://www.framer.com/marketplace/templates/slug/)
     #   $99        ← or "Free"
@@ -96,6 +108,7 @@ def fetch_from_defuddle() -> list[dict]:
             'author': author,
             'price': price_match.group(0) if price_match else '',
             'url': f'https://www.framer.com/marketplace/templates/{slug}/',
+            'thumbnail_url': thumbnail_map.get(slug, ''),
         })
 
     print(f'Parsed {len(templates)} templates from defuddle.')
@@ -155,10 +168,19 @@ def save_to_notion(template: dict) -> None:
 
 def notify_discord(template: dict) -> None:
     try:
-        http_post(
-            os.environ['DISCORD_WEBHOOK_URL'],
-            {'content': f"New Framer template: **{template['title']}** by {template.get('author', 'unknown')} ({template.get('price', '?')}) — {template['url']}"},
-        )
+        thumbnail_url = template.get('thumbnail_url', '')
+        if thumbnail_url:
+            payload: dict = {
+                'embeds': [{
+                    'title': template['title'],
+                    'url': template['url'],
+                    'description': f"by {template.get('author', 'unknown')} · {template.get('price', '?')}",
+                    'image': {'url': thumbnail_url},
+                }]
+            }
+        else:
+            payload = {'content': f"New Framer template: **{template['title']}** by {template.get('author', 'unknown')} ({template.get('price', '?')}) — {template['url']}"}
+        http_post(os.environ['DISCORD_WEBHOOK_URL'], payload)
     except Exception as e:
         print(f'Discord notification failed for "{template["title"]}": {e}')
 
