@@ -48,6 +48,9 @@ Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort
 - Categories/tags — Framer may expose these but they weren't visible in defuddle's markdown output; worth re-checking if the page structure changes
 - Template thumbnail URL — not captured currently; could enrich Discord notifications
 - Pagination — defuddle renders what Framer shows on initial load; if the marketplace lazy-loads beyond the first batch, older items on a given run could be missed (low risk since we sort=recent and run periodically)
+- Retry logic for transient HTTP failures — a simple retry with backoff on `urllib.error.URLError` would improve resilience; skipped to keep the script minimal
+- Richer HTTP error reporting — printing the response body on Notion API errors (4xx/5xx) would aid debugging; skipped as the existing error messages are sufficient for now
+- Author slug capture — the regex processes author URLs but discards the slug portion; could be stored as a separate field for deduplication or linking
 
 ---
 
