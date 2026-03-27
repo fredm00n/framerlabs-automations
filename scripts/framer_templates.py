@@ -89,7 +89,7 @@ def fetch_from_defuddle() -> list[dict]:
         if slug in seen:
             continue
         seen.add(slug)
-        price_match = re.search(r'\$[\d,]+|Free', gap)
+        price_match = re.search(r'\$[\d,.]+|Free', gap)
         templates.append({
             'slug': slug,
             'title': title,
@@ -99,6 +99,8 @@ def fetch_from_defuddle() -> list[dict]:
         })
 
     print(f'Parsed {len(templates)} templates from defuddle.')
+    if len(templates) < 5:
+        print(f'WARNING: only {len(templates)} templates parsed — defuddle output may be incomplete.')
     return templates
 
 
@@ -194,9 +196,12 @@ def main() -> None:
     for template in new_templates:
         if not is_first_run:
             notify_discord(template)
-        save_to_notion(template)
-        action = 'Seeded' if is_first_run else 'Notified + saved'
-        print(f'{action}: {template["title"]}')
+        try:
+            save_to_notion(template)
+            action = 'Seeded' if is_first_run else 'Notified + saved'
+            print(f'{action}: {template["title"]}')
+        except Exception as e:
+            print(f'Failed to save "{template["title"]}" to Notion: {e}')
 
     verb = 'Seeded' if is_first_run else 'Notified'
     print(f'Done. {verb} {len(new_templates)} template(s).')
