@@ -244,6 +244,13 @@ def notify_discord(template: dict) -> None:
         print(f'Discord notification failed for "{template["title"]}": {e}')
 
 
+def _warn_discord(message: str) -> None:
+    try:
+        http_post(os.environ['DISCORD_WEBHOOK_URL'], {'content': message})
+    except Exception as e:
+        print(f'Failed to send Discord warning: {e}')
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -260,6 +267,11 @@ def main() -> None:
         raise SystemExit(1)
 
     templates = fetch_framer_templates()
+    if len(templates) < 5:
+        _warn_discord(
+            f'WARNING: only {len(templates)} template(s) parsed from Framer RSC'
+            ' — format may have changed. Check GitHub Actions logs.'
+        )
     seen_slugs = get_seen_slugs()
 
     new_templates = [t for t in templates if t['slug'] not in seen_slugs]
