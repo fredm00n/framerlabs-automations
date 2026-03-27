@@ -210,13 +210,13 @@ class TestFetchFromRsc(unittest.TestCase):
         first_call_url = mock_get.call_args_list[0][0][0]
         self.assertNotIn('page=', first_call_url)
 
-    def test_stops_after_max_3_pages(self):
-        # Three full pages — loop must stop at page 3 without fetching a 4th.
+    def test_stops_after_max_2_pages(self):
+        # Two full pages — loop must stop at page 2 without fetching a 3rd.
         with patch('framer_templates.http_get',
-                   side_effect=[_full_page(0), _full_page(20), _full_page(40)]) as mock_get:
+                   side_effect=[_full_page(0), _full_page(20)]) as mock_get:
             templates = ft.fetch_from_rsc()
-        self.assertEqual(mock_get.call_count, 3)
-        self.assertEqual(len(templates), 60)
+        self.assertEqual(mock_get.call_count, 2)
+        self.assertEqual(len(templates), 40)
 
     def test_cumulative_pages_deduplicate_correctly(self):
         # page=2 from Framer is cumulative: it contains page=1 items + some new ones.

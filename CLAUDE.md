@@ -62,7 +62,7 @@ Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort
 - **Notifications:** Discord webhook on each new template
 - **First run:** seeds the DB silently — no Discord spam
 - **Fields tracked:** title, slug, URL, author, price, discovered datetime, published datetime
-- **Pagination:** fetches up to 3 pages (60 templates) per run; pages are cumulative (`?page=N` returns items 1–N×20), stops early when a page yields fewer than 20 new items
+- **Pagination:** fetches up to 2 pages (40 templates) per run; pages are cumulative (`?page=N` returns items 1–N×20), stops early when a page yields fewer than 20 new items
 
 **Deferred improvements:**
 - Categories/tags — previously noted as present in the RSC payload, but an inspection of the live payload (2026-03-27) found no category/tag fields at the item level. The RSC format may have changed, or categories may be on a different endpoint. Not pursued until confirmed present.

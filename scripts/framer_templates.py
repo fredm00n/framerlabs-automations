@@ -80,13 +80,13 @@ def fetch_from_rsc() -> list[dict]:
     # execution needed. The defuddle approach missed the 1-2 newest templates because
     # they are hydrated after the initial render that defuddle captured.
     #
-    # Pages are cumulative: page=2 returns items 1-40, page=3 returns items 1-60, etc.
-    # We fetch up to 3 pages (60 templates) and stop early when a page adds fewer than
+    # Pages are cumulative: page=2 returns items 1-40, etc.
+    # We fetch up to 2 pages (40 templates) and stop early when a page adds fewer than
     # 20 new items, which means we've reached the last page.
     seen: set[str] = set()
     templates: list[dict] = []
 
-    for page in range(1, 4):
+    for page in range(1, 3):
         print(f'Fetching Framer marketplace via RSC (page {page})...')
         url = 'https://www.framer.com/marketplace/templates/?sort=recent'
         if page > 1:
