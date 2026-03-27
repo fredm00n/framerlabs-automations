@@ -42,11 +42,12 @@ Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort
 - **State:** Notion DB `Framer Templates` (ID in `NOTION_DATABASE_ID`)
 - **Notifications:** Discord webhook on each new template
 - **First run:** seeds the DB silently — no Discord spam
-- **Fields tracked:** title, slug, URL, author, price, discovered date
+- **Fields tracked:** title, slug, URL, author, price, thumbnail URL, discovered date
+- **Discord notifications:** rich embeds with template image preview
 
 **Deferred improvements:**
 - Categories/tags — Framer may expose these but they weren't visible in defuddle's markdown output; worth re-checking if the page structure changes
-- Template thumbnail URL — not captured currently; could enrich Discord notifications
+- Thumbnail URL in Notion — currently captured and used for Discord but not persisted to Notion; would require adding a URL-type property to the DB schema first
 - Pagination — defuddle renders what Framer shows on initial load; if the marketplace lazy-loads beyond the first batch, older items on a given run could be missed (low risk since we sort=recent and run periodically)
 
 ---

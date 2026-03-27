@@ -6,6 +6,7 @@ State is persisted in a Notion database.
 import json
 import os
 import re
+import urllib.parse
 import urllib.request
 import urllib.error
 from datetime import date
@@ -68,10 +69,30 @@ def fetch_framer_templates() -> list[dict]:
     return fetch_from_defuddle()
 
 
+def _decode_framer_cdn_url(cdn_url: str) -> str:
+    """Extract the direct blob URL from a Framer Next.js image optimizer URL."""
+    m = re.search(r'[?&]url=([^&]+)', cdn_url)
+    if m:
+        return urllib.parse.unquote(m.group(1))
+    return cdn_url
+
+
 def fetch_from_defuddle() -> list[dict]:
     md = http_get('https://defuddle.md/www.framer.com/marketplace/templates/?sort=recent')
     seen: set[str] = set()
     templates = []
+
+    # Build slug → first thumbnail URL map from image-linked entries:
+    #   [![Thumbnail 1 for <Title>...](CDN_URL) ![Thumbnail 2...](CDN_URL)](template_url)
+    thumb_pattern = re.compile(
+        r'\[!\[[^\]]*\]\(([^)]+)\)'           # first image: capture CDN URL
+        r'(?:\s*!\[[^\]]*\]\([^)]+\))*'       # optional additional images
+        r'\]\(https://www\.framer\.com/marketplace/templates/([a-z0-9][a-z0-9-]+)/\)'
+    )
+    thumbnails: dict[str, str] = {}
+    for cdn_url, slug in thumb_pattern.findall(md):
+        if slug not in thumbnails:
+            thumbnails[slug] = _decode_framer_cdn_url(cdn_url)
 
     # Defuddle returns Markdown. Each entry looks like:
     #   [Title](https://www.framer.com/marketplace/templates/slug/)
@@ -96,6 +117,7 @@ def fetch_from_defuddle() -> list[dict]:
             'author': author,
             'price': price_match.group(0) if price_match else '',
             'url': f'https://www.framer.com/marketplace/templates/{slug}/',
+            'thumbnail_url': thumbnails.get(slug, ''),
         })
 
     print(f'Parsed {len(templates)} templates from defuddle.')
@@ -155,10 +177,15 @@ def save_to_notion(template: dict) -> None:
 
 def notify_discord(template: dict) -> None:
     try:
-        http_post(
-            os.environ['DISCORD_WEBHOOK_URL'],
-            {'content': f"New Framer template: **{template['title']}** by {template.get('author', 'unknown')} ({template.get('price', '?')}) — {template['url']}"},
-        )
+        embed: dict = {
+            'title': template['title'],
+            'url': template['url'],
+            'description': f"By **{template.get('author', 'unknown')}** · {template.get('price', '?')}",
+            'color': 0x0055FF,
+        }
+        if template.get('thumbnail_url'):
+            embed['image'] = {'url': template['thumbnail_url']}
+        http_post(os.environ['DISCORD_WEBHOOK_URL'], {'embeds': [embed]})
     except Exception as e:
         print(f'Discord notification failed for "{template["title"]}": {e}')
 
