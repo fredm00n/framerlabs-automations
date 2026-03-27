@@ -33,6 +33,25 @@ No install step needed — stdlib only.
 
 ---
 
+## Testing
+
+Tests live in `tests/` and use Python's built-in `unittest` — no install step needed.
+
+```bash
+python3 -m unittest discover -s tests -p "test_*.py" -v
+```
+
+GitHub Actions runs this automatically on every push and pull request (see `.github/workflows/tests.yml`). A PR with failing CI must not be merged.
+
+**Maintenance rules — apply to every PR, no exceptions:**
+
+- **New script added** → create `tests/test_<name>.py` in the same PR
+- **Existing function modified** → update or extend its tests in the same PR
+- **New fields, API calls, or parsing logic added** → add tests covering the new paths
+- Tests must pass locally before pushing: run the discover command above
+
+---
+
 ## Scripts
 
 ### `scripts/framer_templates.py`
@@ -96,4 +115,6 @@ Read CLAUDE.md and SCHEDULER.md, then follow the instructions in SCHEDULER.md.
 2. Create a Notion DB under the Claude Automations parent page
 3. Add the DB ID to `.env`
 4. Add a `"<name>": "python3 scripts/<name>.py"` entry to `package.json` scripts
-5. Set up a scheduled task pointing at the new script
+5. Add `python3 scripts/<name>.py` to the Step 1 list in `SCHEDULER.md`
+6. Create `tests/test_<name>.py` covering the script's core functions
+7. Set up a scheduled task pointing at the new script
