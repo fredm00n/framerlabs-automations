@@ -118,3 +118,5 @@ Read CLAUDE.md and SCHEDULER.md, then follow the instructions in SCHEDULER.md.
 5. Add `python3 scripts/<name>.py` to the Step 1 list in `SCHEDULER.md`
 6. Create `tests/test_<name>.py` covering the script's core functions
 7. Set up a scheduled task pointing at the new script
+
+**Notion DB schema:** When adding a new tracked field to a script, update the Notion DB schema in the same PR via MCP (use the `notion-update-data-source` tool). Do not add runtime schema-sync logic — schema updates belong at implementation time, not on every run.
