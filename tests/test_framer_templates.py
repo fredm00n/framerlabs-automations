@@ -179,47 +179,6 @@ class TestFetchFromRsc(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# ensure_notion_schema
-# ---------------------------------------------------------------------------
-
-def _db_response(property_names: list[str]) -> str:
-    props = {name: {} for name in property_names}
-    return json.dumps({'properties': props})
-
-
-class TestEnsureNotionSchema(unittest.TestCase):
-
-    def setUp(self):
-        os.environ['NOTION_TOKEN'] = 'test_token'
-        os.environ['NOTION_DATABASE_ID'] = 'test_db_id'
-
-    def test_no_patch_when_all_properties_present(self):
-        all_props = list(ft._REQUIRED_PROPERTIES.keys()) + ['Name']
-        with patch('framer_templates.http_get', return_value=_db_response(all_props)), \
-             patch('framer_templates.http_patch') as mock_patch:
-            ft.ensure_notion_schema()
-        mock_patch.assert_not_called()
-
-    def test_patches_missing_properties(self):
-        # Only "Name" exists — all required properties are missing
-        with patch('framer_templates.http_get', return_value=_db_response(['Name'])), \
-             patch('framer_templates.http_patch', return_value={}) as mock_patch:
-            ft.ensure_notion_schema()
-        mock_patch.assert_called_once()
-        patched_props = mock_patch.call_args[0][1]['properties']
-        self.assertEqual(set(patched_props.keys()), set(ft._REQUIRED_PROPERTIES.keys()))
-
-    def test_patches_only_missing_subset(self):
-        # Published and Thumbnail are absent; others are present
-        present = ['Name', 'Slug', 'URL', 'Author', 'Price', 'Discovered']
-        with patch('framer_templates.http_get', return_value=_db_response(present)), \
-             patch('framer_templates.http_patch', return_value={}) as mock_patch:
-            ft.ensure_notion_schema()
-        patched_props = mock_patch.call_args[0][1]['properties']
-        self.assertEqual(set(patched_props.keys()), {'Published', 'Thumbnail'})
-
-
-# ---------------------------------------------------------------------------
 # get_seen_slugs
 # ---------------------------------------------------------------------------
 
@@ -418,7 +377,6 @@ class TestMain(unittest.TestCase):
         notify_mock = MagicMock()
         with patch('framer_templates.fetch_framer_templates', return_value=templates), \
              patch('framer_templates.get_seen_slugs', return_value=seen_slugs), \
-             patch('framer_templates.ensure_notion_schema'), \
              patch('framer_templates.save_to_notion', save_mock), \
              patch('framer_templates.notify_discord', notify_mock), \
              patch('builtins.open', side_effect=FileNotFoundError):
@@ -455,7 +413,6 @@ class TestMain(unittest.TestCase):
         notify_mock = MagicMock()
         with patch('framer_templates.fetch_framer_templates', return_value=_TEMPLATES), \
              patch('framer_templates.get_seen_slugs', return_value=set()), \
-             patch('framer_templates.ensure_notion_schema'), \
              patch('framer_templates.save_to_notion', save_mock), \
              patch('framer_templates.notify_discord', notify_mock), \
              patch('builtins.open', side_effect=FileNotFoundError):
