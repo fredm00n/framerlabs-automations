@@ -100,9 +100,9 @@ def fetch_from_defuddle() -> list[dict]:
     pattern = re.compile(
         r'(?<!!)\[([^\]]+)\]\(https://www\.framer\.com/marketplace/templates/([a-z0-9][a-z0-9-]+)/\)'
         r'([^\[]*)'
-        r'\[([^\]]+)\]\(https://www\.framer\.com/@[^)]+/\)'
+        r'\[([^\]]+)\]\(https://www\.framer\.com/@([^/]+)/\)'
     )
-    for title, slug, gap, author in pattern.findall(md):
+    for title, slug, gap, author, author_slug in pattern.findall(md):
         if slug in seen:
             continue
         seen.add(slug)
@@ -111,6 +111,7 @@ def fetch_from_defuddle() -> list[dict]:
             'slug': slug,
             'title': title,
             'author': author,
+            'author_url': f'https://www.framer.com/@{author_slug}/',
             'price': price_match.group(0) if price_match else '',
             'url': f'https://www.framer.com/marketplace/templates/{slug}/',
             'thumbnail': thumbnails.get(slug, ''),
@@ -160,22 +161,33 @@ def save_to_notion(template: dict) -> None:
     }
     if template.get('thumbnail'):
         props['Thumbnail'] = {'url': template['thumbnail']}
+    if template.get('author_url'):
+        props['Author URL'] = {'url': template['author_url']}
 
-    try:
+    def _post_page(p: dict) -> None:
         http_post(
             'https://api.notion.com/v1/pages',
-            {'parent': {'database_id': os.environ['NOTION_DATABASE_ID']}, 'properties': props},
+            {'parent': {'database_id': os.environ['NOTION_DATABASE_ID']}, 'properties': p},
             headers=notion_headers(),
         )
+
+    try:
+        _post_page(props)
     except urllib.error.HTTPError as e:
-        if e.code == 400 and 'Thumbnail' in props:
-            # Thumbnail property may not exist in DB schema yet; retry without it
-            props.pop('Thumbnail')
-            http_post(
-                'https://api.notion.com/v1/pages',
-                {'parent': {'database_id': os.environ['NOTION_DATABASE_ID']}, 'properties': props},
-                headers=notion_headers(),
-            )
+        if e.code == 400:
+            # One or more optional URL properties may not exist in the DB schema yet;
+            # retry stripping them one by one until the request succeeds.
+            for optional in ('Author URL', 'Thumbnail'):
+                if optional in props:
+                    props.pop(optional)
+                    try:
+                        _post_page(props)
+                        break
+                    except urllib.error.HTTPError as e2:
+                        if e2.code != 400:
+                            raise
+            else:
+                raise
         else:
             raise
 
@@ -185,10 +197,13 @@ def save_to_notion(template: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def notify_discord(template: dict) -> None:
+    author_name = template.get('author', 'unknown')
+    author_url = template.get('author_url', '')
+    author_str = f'[{author_name}]({author_url})' if author_url else author_name
     embed: dict = {
         'title': template['title'],
         'url': template['url'],
-        'description': f"by {template.get('author', 'unknown')} • {template.get('price', '?')}",
+        'description': f"by {author_str} • {template.get('price', '?')}",
     }
     if template.get('thumbnail'):
         embed['image'] = {'url': template['thumbnail']}
