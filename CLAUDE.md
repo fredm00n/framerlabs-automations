@@ -3,6 +3,19 @@
 A private repository of automations run by Claude on a scheduled task runner.
 Each script monitors something, persists state in Notion, and notifies via Discord.
 
+## Session modes
+
+There are two types of sessions:
+
+| Mode | Trigger | Instructions |
+|---|---|---|
+| **Scheduled** | Initial prompt: `"Read CLAUDE.md and SCHEDULER.md, then follow the instructions in SCHEDULER.md."` | Follow SCHEDULER.md |
+| **Manual** | Any other prompt / interactive chat | Ignore SCHEDULER.md entirely |
+
+**Rule**: Only follow SCHEDULER.md when your initial prompt explicitly tells you to. Never initiate the self-improvement loop (code review, PR creation, improvement scans) during a manual session.
+
+---
+
 ## Architecture
 
 ### Two-Tier Execution
@@ -101,6 +114,8 @@ Each script gets its own Notion database as a sub-page under this parent.
 ## Scheduled task
 
 Script execution (Tier 1) is handled by GitHub Actions cron — see `.github/workflows/framer-monitor.yml`. The Claude Code VM scheduler (Tier 2) handles only the self-improvement loop. See [SCHEDULER.md](./SCHEDULER.md) for the full operational instructions.
+
+**Note**: Only follow SCHEDULER.md when the initial prompt explicitly instructs it (see [Session modes](#session-modes) above).
 
 **Scheduler UI prompt** (set once, never changes):
 ```
