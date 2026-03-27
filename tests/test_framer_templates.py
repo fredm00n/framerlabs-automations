@@ -487,6 +487,7 @@ class TestMain(unittest.TestCase):
              patch('framer_templates.get_seen_slugs', return_value=seen_slugs), \
              patch('framer_templates.save_to_notion', save_mock), \
              patch('framer_templates.notify_discord', notify_mock), \
+             patch('framer_templates._warn_discord'), \
              patch('builtins.open', side_effect=FileNotFoundError):
             ft.main()
         return save_mock, notify_mock
@@ -523,9 +524,71 @@ class TestMain(unittest.TestCase):
              patch('framer_templates.get_seen_slugs', return_value=set()), \
              patch('framer_templates.save_to_notion', save_mock), \
              patch('framer_templates.notify_discord', notify_mock), \
+             patch('framer_templates._warn_discord'), \
              patch('builtins.open', side_effect=FileNotFoundError):
             ft.main()  # must not raise
         self.assertEqual(save_mock.call_count, 2)
+
+    def test_warns_discord_when_fewer_than_five_templates(self):
+        few = _TEMPLATES[:2]  # 2 templates < 5
+        with patch('framer_templates.fetch_framer_templates', return_value=few), \
+             patch('framer_templates.get_seen_slugs', return_value=set()), \
+             patch('framer_templates.save_to_notion'), \
+             patch('framer_templates.notify_discord'), \
+             patch('framer_templates._warn_discord') as warn_mock, \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            ft.main()
+        warn_mock.assert_called_once()
+        self.assertIn('WARNING', warn_mock.call_args[0][0])
+
+    def test_no_discord_warning_when_five_or_more_templates(self):
+        five = [
+            {'slug': f'slug-{i}', 'title': f'T{i}', 'url': f'url{i}',
+             'author': 'A', 'author_slug': '', 'price': 'Free', 'thumbnail': '', 'published_at': ''}
+            for i in range(5)
+        ]
+        with patch('framer_templates.fetch_framer_templates', return_value=five), \
+             patch('framer_templates.get_seen_slugs', return_value=set()), \
+             patch('framer_templates.save_to_notion'), \
+             patch('framer_templates.notify_discord'), \
+             patch('framer_templates._warn_discord') as warn_mock, \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            ft.main()
+        warn_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _warn_discord
+# ---------------------------------------------------------------------------
+
+class TestWarnDiscord(unittest.TestCase):
+
+    def setUp(self):
+        os.environ['DISCORD_ALERTS_WEBHOOK_URL'] = 'https://discord.com/api/webhooks/test-alerts'
+
+    def tearDown(self):
+        os.environ.pop('DISCORD_ALERTS_WEBHOOK_URL', None)
+
+    def test_posts_content_message_to_alerts_webhook(self):
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft._warn_discord('test warning message')
+        mock_post.assert_called_once()
+        url, payload = mock_post.call_args[0]
+        self.assertIn('test-alerts', url)
+        self.assertIn('content', payload)
+        self.assertIn('test warning message', payload['content'])
+
+    def test_uses_alerts_webhook_not_data_webhook(self):
+        os.environ['DISCORD_WEBHOOK_URL'] = 'https://discord.com/api/webhooks/data'
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft._warn_discord('alert')
+        posted_url = mock_post.call_args[0][0]
+        self.assertIn('test-alerts', posted_url)
+        self.assertNotIn('data', posted_url)
+
+    def test_exception_is_caught_and_does_not_propagate(self):
+        with patch('framer_templates.http_post', side_effect=Exception('network error')):
+            ft._warn_discord('msg')  # must not raise
 
 
 if __name__ == '__main__':
