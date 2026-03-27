@@ -62,10 +62,10 @@ Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort
 - **Notifications:** Discord webhook on each new template
 - **First run:** seeds the DB silently — no Discord spam
 - **Fields tracked:** title, slug, URL, author, price, discovered datetime, published datetime
+- **Pagination:** fetches up to 3 pages (60 templates) per run; pages are cumulative (`?page=N` returns items 1–N×20), stops early when a page yields fewer than 20 new items
 
 **Deferred improvements:**
 - Categories/tags — previously noted as present in the RSC payload, but an inspection of the live payload (2026-03-27) found no category/tag fields at the item level. The RSC format may have changed, or categories may be on a different endpoint. Not pursued until confirmed present.
-- Pagination — default RSC fetch returns ~20 templates; each `?page=N` adds 20 more cumulatively. Low risk since we sort=recent and run periodically; new additions will be caught within one run
 - Existing Notion records lack the `Thumbnail` and `Published` properties — only new records saved after their respective PRs include them. Backfill via Notion API is possible but skipped as low priority
 - RSC format is an internal Next.js mechanism — Framer could change the response structure without notice. If parsing breaks (< 5 templates warning fires), inspect the raw RSC payload and update `_extract_json_object` / the `"item":{"id":` search key
 - HTTP retry logic — transient network errors cause the whole run to abort; could add simple exponential backoff. Not added to keep stdlib-only code simple; scheduler will retry on next scheduled run
