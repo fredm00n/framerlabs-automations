@@ -44,7 +44,7 @@ def http_post(url: str, data: dict, headers: dict | None = None) -> dict:
     req = urllib.request.Request(
         url,
         data=body,
-        headers={'Content-Type': 'application/json', **(headers or {})},
+        headers={'Content-Type': 'application/json', 'User-Agent': 'automation-bot/1.0', **(headers or {})},
         method='POST',
     )
     with urllib.request.urlopen(req, timeout=30) as r:
