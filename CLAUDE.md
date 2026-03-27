@@ -44,6 +44,11 @@ Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort
 - **First run:** seeds the DB silently — no Discord spam
 - **Fields tracked:** title, slug, URL, author, price, discovered date
 
+**Deferred improvements:**
+- Categories/tags — Framer may expose these but they weren't visible in defuddle's markdown output; worth re-checking if the page structure changes
+- Template thumbnail URL — not captured currently; could enrich Discord notifications
+- Pagination — defuddle renders what Framer shows on initial load; if the marketplace lazy-loads beyond the first batch, older items on a given run could be missed (low risk since we sort=recent and run periodically)
+
 ---
 
 ## Environment variables (`.env`)
@@ -86,6 +91,7 @@ If improvements are found:
 1. Create a branch: claude/improve-<script>-<random>
 2. Implement changes
 3. Commit, push, open a PR against main for review
+4. Update the script's **Deferred improvements** section in CLAUDE.md with anything considered but not implemented, and why — commit this to the same branch
 
 If no improvements needed, exit cleanly.
 ```
