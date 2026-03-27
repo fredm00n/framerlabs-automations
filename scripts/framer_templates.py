@@ -194,14 +194,15 @@ def main() -> None:
         print('First run — seeding DB without Discord notifications to avoid spam.')
 
     for template in new_templates:
-        if not is_first_run:
-            notify_discord(template)
         try:
             save_to_notion(template)
-            action = 'Seeded' if is_first_run else 'Notified + saved'
-            print(f'{action}: {template["title"]}')
         except Exception as e:
             print(f'Failed to save "{template["title"]}" to Notion: {e}')
+            continue
+        if not is_first_run:
+            notify_discord(template)
+        action = 'Seeded' if is_first_run else 'Notified + saved'
+        print(f'{action}: {template["title"]}')
 
     verb = 'Seeded' if is_first_run else 'Notified'
     print(f'Done. {verb} {len(new_templates)} template(s).')
