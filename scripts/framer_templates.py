@@ -51,6 +51,19 @@ def http_post(url: str, data: dict, headers: dict | None = None) -> dict:
         return json.loads(raw) if raw else {}
 
 
+def http_patch(url: str, data: dict, headers: dict | None = None) -> dict:
+    body = json.dumps(data).encode('utf-8')
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={'Content-Type': 'application/json', 'User-Agent': 'automation-bot/1.0', **(headers or {})},
+        method='PATCH',
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        raw = r.read()
+        return json.loads(raw) if raw else {}
+
+
 def notion_headers() -> dict:
     return {
         'Authorization': f'Bearer {os.environ["NOTION_TOKEN"]}',
@@ -151,6 +164,34 @@ def _extract_json_object(s: str, start: int) -> dict:
 # Notion state store
 # ---------------------------------------------------------------------------
 
+# Declarative schema — add an entry here whenever a new property is tracked.
+# ensure_notion_schema() reads this and creates any missing properties at startup.
+_REQUIRED_PROPERTIES: dict[str, dict] = {
+    'Slug':       {'rich_text': {}},
+    'URL':        {'url': {}},
+    'Author':     {'rich_text': {}},
+    'Price':      {'rich_text': {}},
+    'Discovered': {'date': {}},
+    'Published':  {'date': {}},
+    'Thumbnail':  {'url': {}},
+}
+
+
+def ensure_notion_schema() -> None:
+    """Create any DB properties that are declared in _REQUIRED_PROPERTIES but not yet in Notion."""
+    db_id = os.environ['NOTION_DATABASE_ID']
+    raw = http_get(f'https://api.notion.com/v1/databases/{db_id}', headers=notion_headers())
+    existing = set(json.loads(raw).get('properties', {}).keys())
+    missing = {k: v for k, v in _REQUIRED_PROPERTIES.items() if k not in existing}
+    if missing:
+        print(f'Adding missing Notion DB properties: {", ".join(sorted(missing))}')
+        http_patch(
+            f'https://api.notion.com/v1/databases/{db_id}',
+            {'properties': missing},
+            headers=notion_headers(),
+        )
+
+
 def get_seen_slugs() -> set[str]:
     slugs: set[str] = set()
     cursor = None
@@ -240,6 +281,7 @@ def main() -> None:
         print(f'Missing required env vars: {", ".join(missing)}')
         raise SystemExit(1)
 
+    ensure_notion_schema()
     templates = fetch_framer_templates()
     seen_slugs = get_seen_slugs()
 
