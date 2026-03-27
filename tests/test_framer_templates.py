@@ -103,10 +103,11 @@ class TestLoadDotenv(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 def _rsc_item(slug, id_='abc', title='T', price='Free', author='A',
+              author_slug='a-studio',
               thumbnail='https://cdn.example.com/t.jpg', published='$D2024-01-15'):
     return (
         f'"item":{{"id":"{id_}","slug":"{slug}","title":"{title}",'
-        f'"price":"{price}","creator":{{"name":"{author}"}},'
+        f'"price":"{price}","creator":{{"name":"{author}","slug":"{author_slug}"}},'
         f'"thumbnail":"{thumbnail}","publishedAt":"{published}"}}'
     )
 
@@ -130,11 +131,12 @@ class TestFetchFromRsc(unittest.TestCase):
         self.assertEqual(slugs, {'slug-a', 'slug-b'})
 
     def test_extracts_all_fields_correctly(self):
-        body = _rsc_item('cool-template', title='Cool Template', author='John Doe')
+        body = _rsc_item('cool-template', title='Cool Template', author='John Doe', author_slug='john-doe')
         templates = self._fetch(body)
         t = templates[0]
         self.assertEqual(t['title'], 'Cool Template')
         self.assertEqual(t['author'], 'John Doe')
+        self.assertEqual(t['author_slug'], 'john-doe')
         self.assertEqual(t['price'], 'Free')  # no $$ prefix → unchanged
         self.assertEqual(t['url'], 'https://www.framer.com/marketplace/templates/cool-template/')
         self.assertEqual(t['thumbnail'], 'https://cdn.example.com/t.jpg')
@@ -398,6 +400,7 @@ _DISCORD_TEMPLATE = {
     'title': 'Test Template',
     'url': 'https://www.framer.com/marketplace/templates/test/',
     'author': 'Bob',
+    'author_slug': 'bob-studio',
     'price': '$10',
     'thumbnail': '',
 }
@@ -414,7 +417,23 @@ class TestNotifyDiscord(unittest.TestCase):
         mock_post.assert_called_once()
         payload = mock_post.call_args[0][1]
         self.assertIn('embeds', payload)
-        self.assertEqual(payload['embeds'][0]['title'], 'Test Template')
+        embed = payload['embeds'][0]
+        self.assertEqual(embed['title'], 'Test Template')
+        self.assertEqual(embed['color'], 0x5865F2)
+
+    def test_description_includes_author_link(self):
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.notify_discord(_DISCORD_TEMPLATE)
+        embed = mock_post.call_args[0][1]['embeds'][0]
+        self.assertIn('[Bob](https://www.framer.com/marketplace/profiles/bob-studio/)', embed['description'])
+        self.assertIn('**$10**', embed['description'])
+
+    def test_description_plain_author_when_no_slug(self):
+        t = {**_DISCORD_TEMPLATE, 'author_slug': ''}
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.notify_discord(t)
+        embed = mock_post.call_args[0][1]['embeds'][0]
+        self.assertEqual(embed['description'], 'by Bob · **$10**')
 
     def test_includes_image_when_thumbnail_present(self):
         t = {**_DISCORD_TEMPLATE, 'thumbnail': 'https://cdn.example.com/img.jpg'}
@@ -443,12 +462,12 @@ _TEMPLATES = [
     {
         'slug': 'template-a', 'title': 'Template A',
         'url': 'https://www.framer.com/marketplace/templates/template-a/',
-        'author': 'Alice', 'price': 'Free', 'thumbnail': '', 'published_at': '',
+        'author': 'Alice', 'author_slug': '', 'price': 'Free', 'thumbnail': '', 'published_at': '',
     },
     {
         'slug': 'template-b', 'title': 'Template B',
         'url': 'https://www.framer.com/marketplace/templates/template-b/',
-        'author': 'Bob', 'price': '$10', 'thumbnail': '', 'published_at': '',
+        'author': 'Bob', 'author_slug': '', 'price': '$10', 'thumbnail': '', 'published_at': '',
     },
 ]
 
