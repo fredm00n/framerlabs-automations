@@ -50,7 +50,6 @@ Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort
 - Existing Notion records lack the `Thumbnail` URL property — only new records saved after this change will include it. A one-time backfill via the Notion API would populate old rows, but was skipped as low priority.
 - Template thumbnail URL — not captured currently; could enrich Discord notifications (open PR: #8)
 - Pagination — defuddle renders what Framer shows on initial load; if the marketplace lazy-loads beyond the first batch, older items on a given run could be missed (low risk since we sort=recent and run periodically)
-- Non-USD currency prices — price regex matches `$` and `Free` only; `€`/`£` prices would be stored as empty string. Low risk since Framer's marketplace appears to use USD, but worth revisiting if international pricing appears
 - HTTP retry logic — transient network errors (defuddle, Notion, Discord) cause the whole run to abort; could add simple exponential backoff. Not added to keep stdlib-only code simple; scheduler will retry on next scheduled run
 - Retry logic for transient HTTP failures — a simple retry with backoff on `urllib.error.URLError` would improve resilience; skipped to keep the script minimal
 - Richer HTTP error reporting — printing the response body on Notion API errors (4xx/5xx) would aid debugging; skipped as the existing error messages are sufficient for now
