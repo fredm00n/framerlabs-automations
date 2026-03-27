@@ -100,6 +100,9 @@ def fetch_from_rsc() -> list[dict]:
                 price = price_raw[1:] if price_raw.startswith('$$') else price_raw
                 creator = item.get('creator') or {}
                 author = creator.get('name', '')
+                # RSC encodes Date objects with a "$D" prefix — strip it
+                published_raw = item.get('publishedAt', '')
+                published_at = published_raw[2:] if published_raw.startswith('$D') else published_raw
                 templates.append({
                     'slug': slug,
                     'title': item.get('title', ''),
@@ -107,6 +110,7 @@ def fetch_from_rsc() -> list[dict]:
                     'price': price,
                     'url': f'https://www.framer.com/marketplace/templates/{slug}/',
                     'thumbnail': item.get('thumbnail', ''),
+                    'published_at': published_at,
                 })
         except (ValueError, KeyError):
             pass
@@ -179,6 +183,8 @@ def save_to_notion(template: dict) -> None:
         'Price': {'rich_text': [{'text': {'content': template.get('price', '')}}]},
         'Discovered': {'date': {'start': datetime.now().isoformat()}},
     }
+    if template.get('published_at'):
+        props['Published'] = {'date': {'start': template['published_at']}}
     if template.get('thumbnail'):
         props['Thumbnail'] = {'url': template['thumbnail']}
 
