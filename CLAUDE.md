@@ -45,9 +45,10 @@ Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort
 - **Fields tracked:** title, slug, URL, author, price, discovered date
 
 **Deferred improvements:**
-- Categories/tags — Framer may expose these but they weren't visible in defuddle's markdown output; worth re-checking if the page structure changes
-- Template thumbnail URL — not captured currently; could enrich Discord notifications
+- Categories/tags — Framer may expose these but they weren't visible in defuddle's markdown output (the `## Categories` heading appears but is empty); worth re-checking if the page structure changes
+- Thumbnail in Notion — thumbnail URL is extracted but not stored in Notion; would require adding a `Thumbnail` URL property to the Notion DB schema first
 - Pagination — defuddle renders what Framer shows on initial load; if the marketplace lazy-loads beyond the first batch, older items on a given run could be missed (low risk since we sort=recent and run periodically)
+- Remix/purchase count — not exposed in defuddle's markdown output
 
 ---
 

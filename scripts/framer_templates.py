@@ -73,6 +73,17 @@ def fetch_from_defuddle() -> list[dict]:
     seen: set[str] = set()
     templates = []
 
+    # Pre-pass: extract first thumbnail URL for each template slug.
+    # Defuddle renders image links wrapped in a template link:
+    #   [![Thumbnail 1 for ...](img_url) ![Thumbnail 2 ...](img2_url)](template_url)
+    # The (?:\s*![...](...))*  group skips any additional images before the closing ](template_url).
+    thumb_pattern = re.compile(
+        r'\[!\[[^\]]*\]\((https://www\.framer\.com/creators-assets/[^)]+)\)'
+        r'(?:\s*!\[[^\]]*\]\([^)]*\))*'
+        r'\]\(https://www\.framer\.com/marketplace/templates/([a-z0-9][a-z0-9-]+)/\)'
+    )
+    thumbnails = {slug: url for url, slug in thumb_pattern.findall(md)}
+
     # Defuddle returns Markdown. Each entry looks like:
     #   [Title](https://www.framer.com/marketplace/templates/slug/)
     #   $99        ← or "Free"
@@ -96,6 +107,7 @@ def fetch_from_defuddle() -> list[dict]:
             'author': author,
             'price': price_match.group(0) if price_match else '',
             'url': f'https://www.framer.com/marketplace/templates/{slug}/',
+            'thumbnail': thumbnails.get(slug, ''),
         })
 
     print(f'Parsed {len(templates)} templates from defuddle.')
@@ -155,10 +167,16 @@ def save_to_notion(template: dict) -> None:
 
 def notify_discord(template: dict) -> None:
     try:
-        http_post(
-            os.environ['DISCORD_WEBHOOK_URL'],
-            {'content': f"New Framer template: **{template['title']}** by {template.get('author', 'unknown')} ({template.get('price', '?')}) — {template['url']}"},
-        )
+        embed: dict = {
+            'title': template['title'],
+            'url': template['url'],
+            'description': f"by {template.get('author', 'unknown')} · {template.get('price', '?')}",
+            'color': 0x0055FF,
+        }
+        thumbnail = template.get('thumbnail', '')
+        if thumbnail:
+            embed['thumbnail'] = {'url': thumbnail}
+        http_post(os.environ['DISCORD_WEBHOOK_URL'], {'embeds': [embed]})
     except Exception as e:
         print(f'Discord notification failed for "{template["title"]}": {e}')
 
