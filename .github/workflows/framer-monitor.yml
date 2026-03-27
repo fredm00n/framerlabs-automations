@@ -18,4 +18,5 @@ jobs:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_ALERTS_WEBHOOK_URL: ${{ secrets.DISCORD_ALERTS_WEBHOOK_URL }}
         run: python3 scripts/framer_templates.py

@@ -24,7 +24,8 @@ Stored in `.env` at the repo root (committed — this is a private personal repo
 Never log or echo secret values. If the repo ever goes public, rotate all secrets first.
 
 ### Notifications
-New discoveries are sent to a **Discord webhook** — one message per item, not batched.
+- **Data notifications** (`DISCORD_WEBHOOK_URL`): new discoveries, one message per item, not batched.
+- **System alerts** (`DISCORD_ALERTS_WEBHOOK_URL`): system-level warnings and errors (e.g. RSC parse failure, unexpected API errors). Separate channel so operational issues don't get lost in data traffic. All scripts must use `DISCORD_ALERTS_WEBHOOK_URL` for system alerts, not `DISCORD_WEBHOOK_URL`.
 
 ---
 
@@ -72,7 +73,7 @@ Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort
 **Deferred improvements:**
 - Categories/tags — previously noted as present in the RSC payload, but an inspection of the live payload (2026-03-27) found no category/tag fields at the item level. The RSC format may have changed, or categories may be on a different endpoint. Not pursued until confirmed present.
 - Existing Notion records lack the `Thumbnail` and `Published` properties — only new records saved after their respective PRs include them. Backfill via Notion API is possible but skipped as low priority
-- RSC format is an internal Next.js mechanism — Framer could change the response structure without notice. If parsing breaks (< 5 templates warning fires), inspect the raw RSC payload and update `_extract_json_object` / the `"item":{"id":` search key
+- RSC format is an internal Next.js mechanism — Framer could change the response structure without notice. When parsing yields < 5 templates a Discord alert is sent to `DISCORD_ALERTS_WEBHOOK_URL`; inspect the raw RSC payload and update `_extract_json_object` / the `"item":{"id":` search key
 - HTTP retry logic — transient network errors cause the whole run to abort; could add simple exponential backoff. Not added to keep stdlib-only code simple; scheduler will retry on next scheduled run
 - Richer HTTP error reporting — printing the response body on Notion API errors (4xx/5xx) would aid debugging; skipped as the existing error messages are sufficient for now
 
@@ -85,6 +86,7 @@ Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort
 | `NOTION_TOKEN` | Notion integration token (`ntn_xxx`) |
 | `NOTION_DATABASE_ID` | ID of the Framer Templates Notion DB |
 | `DISCORD_WEBHOOK_URL` | Discord webhook for new template notifications |
+| `DISCORD_ALERTS_WEBHOOK_URL` | Discord webhook for system-level errors and warnings (separate channel) |
 
 ---
 
