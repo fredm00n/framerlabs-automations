@@ -48,6 +48,13 @@ Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort
 - Categories/tags — Framer may expose these but they weren't visible in defuddle's markdown output; worth re-checking if the page structure changes
 - Pagination — defuddle renders what Framer shows on initial load; if the marketplace lazy-loads beyond the first batch, older items on a given run could be missed (low risk since we sort=recent and run periodically)
 - Existing Notion records lack the `Thumbnail` URL property — only new records saved after this change will include it. A one-time backfill via the Notion API would populate old rows, but was skipped as low priority.
+- Template thumbnail URL — not captured currently; could enrich Discord notifications (open PR: #8)
+- Pagination — defuddle renders what Framer shows on initial load; if the marketplace lazy-loads beyond the first batch, older items on a given run could be missed (low risk since we sort=recent and run periodically)
+- Non-USD currency prices — price regex matches `$` and `Free` only; `€`/`£` prices would be stored as empty string. Low risk since Framer's marketplace appears to use USD, but worth revisiting if international pricing appears
+- HTTP retry logic — transient network errors (defuddle, Notion, Discord) cause the whole run to abort; could add simple exponential backoff. Not added to keep stdlib-only code simple; scheduler will retry on next scheduled run
+- Retry logic for transient HTTP failures — a simple retry with backoff on `urllib.error.URLError` would improve resilience; skipped to keep the script minimal
+- Richer HTTP error reporting — printing the response body on Notion API errors (4xx/5xx) would aid debugging; skipped as the existing error messages are sufficient for now
+- Author slug capture — the regex processes author URLs but discards the slug portion; could be stored as a separate field for deduplication or linking
 
 ---
 
@@ -78,20 +85,33 @@ Future plan: a conductor script (`run.py`) that checks per-script interval confi
 When setting up a scheduled task for a script, use this pattern:
 
 ```
-Pull latest main from fredm00n/claude-automations.
-Run: python3 scripts/<script_name>.py
+You are running in the claude-automations repo (fredm00n/claude-automations).
+Read CLAUDE.md first for full context on the architecture and conventions.
 
-Review the output and the script code. Look for improvements:
-- Parsing robustness
+## Step 1 — Run the script
+python3 scripts/<script_name>.py
+
+## Step 2 — Review for improvements
+Review the script output and the code in scripts/. Consider improvements such as:
+- Parsing robustness (does the source output format still look correct?)
 - New useful fields to track
-- Edge cases
-- Any enhancements that fit the goal
+- Edge cases or error handling gaps
+- Any enhancements that fit the broader goal of the script
 
-If improvements are found:
-1. Create a branch: claude/improve-<script>-<random>
-2. Implement changes
-3. Commit, push, open a PR against main for review
-4. Update the script's **Deferred improvements** section in CLAUDE.md with anything considered but not implemented, and why — commit this to the same branch
+## Step 3 — Check for existing open PRs
+Before implementing anything, use the GitHub MCP tools to list all open PRs in
+fredm00n/claude-automations. If any open PR already addresses the improvement
+you're considering (even partially or under a different name), skip that
+improvement entirely and exit cleanly. Do not open duplicate PRs.
+
+## Step 4 — Implement if worthwhile
+If you find a clear, self-contained improvement with no existing open PR covering it:
+1. Create a branch: claude/improve-<script>-<short-description>
+2. Implement the change
+3. Commit with a descriptive message
+4. Push and open a PR against main for human review
+5. Update the script's **Deferred improvements** section in CLAUDE.md with anything
+   considered but not implemented, and why — commit this to the same branch
 
 If no improvements needed, exit cleanly.
 ```

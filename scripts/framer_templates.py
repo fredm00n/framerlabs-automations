@@ -48,7 +48,8 @@ def http_post(url: str, data: dict, headers: dict | None = None) -> dict:
         method='POST',
     )
     with urllib.request.urlopen(req, timeout=30) as r:
-        return json.loads(r.read())
+        raw = r.read()
+        return json.loads(raw) if raw else {}
 
 
 def notion_headers() -> dict:
@@ -228,14 +229,15 @@ def main() -> None:
         print('First run — seeding DB without Discord notifications to avoid spam.')
 
     for template in new_templates:
-        if not is_first_run:
-            notify_discord(template)
         try:
             save_to_notion(template)
-            action = 'Seeded' if is_first_run else 'Notified + saved'
-            print(f'{action}: {template["title"]}')
         except Exception as e:
             print(f'Failed to save "{template["title"]}" to Notion: {e}')
+            continue
+        if not is_first_run:
+            notify_discord(template)
+        action = 'Seeded' if is_first_run else 'Notified + saved'
+        print(f'{action}: {template["title"]}')
 
     verb = 'Seeded' if is_first_run else 'Notified'
     print(f'Done. {verb} {len(new_templates)} template(s).')
