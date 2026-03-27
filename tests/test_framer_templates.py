@@ -111,6 +111,11 @@ def _rsc_item(slug, id_='abc', title='T', price='Free', author='A',
     )
 
 
+def _full_page(offset=0):
+    """Return an RSC body string containing exactly 20 templates."""
+    return '\n'.join(_rsc_item(f'slug-{offset + i}', id_=str(offset + i)) for i in range(20))
+
+
 class TestFetchFromRsc(unittest.TestCase):
 
     def _fetch(self, body):
@@ -176,6 +181,90 @@ class TestFetchFromRsc(unittest.TestCase):
             ft.fetch_from_rsc()
         output = ' '.join(str(c) for c in mock_print.call_args_list)
         self.assertNotIn('WARNING', output)
+
+    def test_fetches_page_2_when_page_1_is_full(self):
+        # A full first page (20 items) means there may be more; page 2 must be fetched.
+        page2_body = _rsc_item('slug-20', id_='20')  # 1 new item on page 2
+        with patch('framer_templates.http_get', side_effect=[_full_page(), page2_body]) as mock_get:
+            templates = ft.fetch_from_rsc()
+        self.assertEqual(mock_get.call_count, 2)
+        self.assertEqual(len(templates), 21)
+
+    def test_does_not_fetch_page_2_when_page_1_is_partial(self):
+        body = '\n'.join(_rsc_item(f'slug-{i}', id_=str(i)) for i in range(5))
+        with patch('framer_templates.http_get', side_effect=[body]) as mock_get:
+            templates = ft.fetch_from_rsc()
+        self.assertEqual(mock_get.call_count, 1)
+        self.assertEqual(len(templates), 5)
+
+    def test_page_2_url_includes_page_param(self):
+        page2_body = _rsc_item('slug-20', id_='20')
+        with patch('framer_templates.http_get', side_effect=[_full_page(), page2_body]) as mock_get:
+            ft.fetch_from_rsc()
+        second_call_url = mock_get.call_args_list[1][0][0]
+        self.assertIn('page=2', second_call_url)
+
+    def test_page_1_url_does_not_include_page_param(self):
+        with patch('framer_templates.http_get', side_effect=[_rsc_item('s')]) as mock_get:
+            ft.fetch_from_rsc()
+        first_call_url = mock_get.call_args_list[0][0][0]
+        self.assertNotIn('page=', first_call_url)
+
+    def test_stops_after_max_2_pages(self):
+        # Two full pages — loop must stop at page 2 without fetching a 3rd.
+        with patch('framer_templates.http_get',
+                   side_effect=[_full_page(0), _full_page(20)]) as mock_get:
+            templates = ft.fetch_from_rsc()
+        self.assertEqual(mock_get.call_count, 2)
+        self.assertEqual(len(templates), 40)
+
+    def test_cumulative_pages_deduplicate_correctly(self):
+        # page=2 from Framer is cumulative: it contains page=1 items + some new ones.
+        # This page adds items 0-19 again (duplicates) plus 15 new items — total 35 unique.
+        page1 = _full_page(0)
+        extra = '\n'.join(_rsc_item(f'slug-{20 + i}', id_=str(20 + i)) for i in range(15))
+        page2 = _full_page(0) + '\n' + extra  # 20 dups + 15 new → new_this_page=15 → stops
+        with patch('framer_templates.http_get', side_effect=[page1, page2]):
+            templates = ft.fetch_from_rsc()
+        self.assertEqual(len(templates), 35)
+
+
+# ---------------------------------------------------------------------------
+# _parse_rsc_body
+# ---------------------------------------------------------------------------
+
+class TestParseRscBody(unittest.TestCase):
+
+    def _parse(self, body):
+        seen: set = set()
+        templates: list = []
+        ft._parse_rsc_body(body, seen, templates)
+        return seen, templates
+
+    def test_appends_new_templates(self):
+        _, templates = self._parse(_rsc_item('s1', id_='1') + '\n' + _rsc_item('s2', id_='2'))
+        self.assertEqual(len(templates), 2)
+
+    def test_skips_slugs_already_in_seen(self):
+        seen = {'existing'}
+        templates: list = []
+        ft._parse_rsc_body(_rsc_item('existing', id_='1'), seen, templates)
+        self.assertEqual(len(templates), 0)
+
+    def test_updates_seen_with_new_slugs(self):
+        seen, _ = self._parse(_rsc_item('new-slug', id_='1'))
+        self.assertIn('new-slug', seen)
+
+    def test_skips_item_without_slug(self):
+        _, templates = self._parse(_rsc_item('', id_='1'))
+        self.assertEqual(len(templates), 0)
+
+    def test_multiple_calls_accumulate(self):
+        seen: set = set()
+        templates: list = []
+        ft._parse_rsc_body(_rsc_item('s1', id_='1'), seen, templates)
+        ft._parse_rsc_body(_rsc_item('s2', id_='2'), seen, templates)
+        self.assertEqual(len(templates), 2)
 
 
 # ---------------------------------------------------------------------------

@@ -66,24 +66,48 @@ def fetch_framer_templates() -> list[dict]:
     return fetch_from_rsc()
 
 
+_RSC_HEADERS = {
+    'Accept': 'text/x-component',
+    'Rsc': '1',
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+}
+
+
 def fetch_from_rsc() -> list[dict]:
     # Framer uses Next.js RSC (React Server Components). Fetching the marketplace
     # URL with Rsc: 1 header returns a structured component stream that includes
     # all templates (including the newest) directly from the server — no JavaScript
     # execution needed. The defuddle approach missed the 1-2 newest templates because
     # they are hydrated after the initial render that defuddle captured.
-    print('Fetching Framer marketplace via RSC...')
-    body = http_get(
-        'https://www.framer.com/marketplace/templates/?sort=recent',
-        headers={
-            'Accept': 'text/x-component',
-            'Rsc': '1',
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        }
-    )
-
+    #
+    # Pages are cumulative: page=2 returns items 1-40, etc.
+    # We fetch up to 2 pages (40 templates) and stop early when a page adds fewer than
+    # 20 new items, which means we've reached the last page.
     seen: set[str] = set()
     templates: list[dict] = []
+
+    for page in range(1, 3):
+        print(f'Fetching Framer marketplace via RSC (page {page})...')
+        url = 'https://www.framer.com/marketplace/templates/?sort=recent'
+        if page > 1:
+            url += f'&page={page}'
+        body = http_get(url, headers=_RSC_HEADERS)
+
+        count_before = len(templates)
+        _parse_rsc_body(body, seen, templates)
+        new_this_page = len(templates) - count_before
+
+        if new_this_page < 20:
+            break
+
+    print(f'Parsed {len(templates)} templates from RSC.')
+    if len(templates) < 5:
+        print(f'WARNING: only {len(templates)} templates parsed — RSC output may be incomplete.')
+    return templates
+
+
+def _parse_rsc_body(body: str, seen: set, templates: list) -> None:
+    """Parse template items from an RSC body, appending new ones to templates in-place."""
     search = '"item":{"id":'
     pos = 0
     while True:
@@ -115,11 +139,6 @@ def fetch_from_rsc() -> list[dict]:
         except (ValueError, KeyError):
             pass
         pos = idx + 1
-
-    print(f'Parsed {len(templates)} templates from RSC.')
-    if len(templates) < 5:
-        print(f'WARNING: only {len(templates)} templates parsed — RSC output may be incomplete.')
-    return templates
 
 
 def _extract_json_object(s: str, start: int) -> dict:
