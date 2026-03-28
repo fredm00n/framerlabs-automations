@@ -249,7 +249,7 @@ def notify_discord(template: dict) -> None:
     if template.get('thumbnail'):
         embed['image'] = {'url': template['thumbnail']}
     try:
-        http_post(os.environ['DISCORD_WEBHOOK_URL'], {'embeds': [embed]})
+        http_post(os.environ['DISCORD_WEBHOOK_URL_TEMPLATES'], {'embeds': [embed]})
     except Exception as e:
         print(f'Discord notification failed for "{template["title"]}": {e}')
 
@@ -270,7 +270,7 @@ def main() -> None:
     load_dotenv()
 
     missing = [
-        k for k in ('NOTION_TOKEN', 'NOTION_DATABASE_ID', 'DISCORD_WEBHOOK_URL')
+        k for k in ('NOTION_TOKEN', 'NOTION_DATABASE_ID', 'DISCORD_WEBHOOK_URL_TEMPLATES')
         if not os.environ.get(k)
     ]
     if missing:
