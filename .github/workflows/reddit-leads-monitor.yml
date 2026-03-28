@@ -1,0 +1,22 @@
+name: Reddit Leads Monitor
+
+on:
+  schedule:
+    - cron: "30 */2 * * *" # offset 30 min from framer-monitor to spread load
+  workflow_dispatch:
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Run reddit_leads
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_REDDIT_LEADS_DB_ID: ${{ secrets.NOTION_REDDIT_LEADS_DB_ID }}
+          DISCORD_WEBHOOK_URL_LEADS: ${{ secrets.DISCORD_WEBHOOK_URL_LEADS }}
+          DISCORD_ALERTS_WEBHOOK_URL: ${{ secrets.DISCORD_ALERTS_WEBHOOK_URL }}
+        run: python3 scripts/reddit_leads.py

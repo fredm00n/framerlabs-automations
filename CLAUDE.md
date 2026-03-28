@@ -5,14 +5,15 @@ Each script monitors something, persists state in Notion, and notifies via Disco
 
 ## Session modes
 
-There are two types of sessions:
+There are three types of sessions:
 
 | Mode | Trigger | Instructions |
 |---|---|---|
-| **Scheduled** | Initial prompt: `"Read CLAUDE.md and SCHEDULER.md, then follow the instructions in SCHEDULER.md."` | Follow SCHEDULER.md |
-| **Manual** | Any other prompt / interactive chat | Ignore SCHEDULER.md entirely |
+| **Scheduled — self-improvement** | Initial prompt: `"Read CLAUDE.md and SCHEDULER.md, then follow the instructions in SCHEDULER.md."` | Follow SCHEDULER.md |
+| **Scheduled — leads review** | Initial prompt: `"Read CLAUDE.md and REDDIT_LEADS_REVIEWER.md, then follow the instructions in REDDIT_LEADS_REVIEWER.md."` | Follow REDDIT_LEADS_REVIEWER.md |
+| **Manual** | Any other prompt / interactive chat | Ignore SCHEDULER.md and REDDIT_LEADS_REVIEWER.md entirely |
 
-**Rule**: Only follow SCHEDULER.md when your initial prompt explicitly tells you to. Never initiate the self-improvement loop (code review, PR creation, improvement scans) during a manual session.
+**Rule**: Only follow a scheduler file when your initial prompt explicitly tells you to. Never initiate the self-improvement loop or lead review during a manual session.
 
 ---
 
@@ -92,13 +93,61 @@ Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort
 
 ---
 
+### `scripts/reddit_leads.py`
+Monitors Reddit RSS feeds across 43 subreddits for potential Framer freelance leads.
+
+**Two-phase design:**
+- **Phase 1 — Light filter** (this script, runs every 2h via GitHub Actions): Fetches RSS feeds,
+  applies keyword-based filtering, deduplicates against Notion, saves candidates as `"pending"`.
+  No Discord notifications, no LLM reasoning.
+- **Phase 2 — Claude review** (daily dedicated session, see `REDDIT_LEADS_REVIEWER.md`):
+  Reads pending leads from Notion, evaluates each with reasoning, marks approved/rejected,
+  notifies Discord only for approved leads.
+
+- **Source:** Reddit RSS feeds (`https://www.reddit.com/r/{subreddit}/.rss`)
+- **State:** Notion DB `Reddit Leads` (ID in `NOTION_REDDIT_LEADS_DB_ID`)
+- **Notifications:** Discord webhook `DISCORD_WEBHOOK_URL_LEADS` (approved leads only, sent by reviewer session)
+- **Dedup:** Per-URL Notion query, only for posts that passed the light filter (~10–30/run)
+
+**Subreddit categories and filter logic:**
+- *Hiring subreddits* (`forhire`, `hiring`, `DesignJobs`, `freelance`, `HungryArtists`, `jobbit`):
+  pass if any web/design signal present
+- *Design/tech subreddits* (`framer`, `figma`, `webdev`, `web_design`, etc.):
+  pass if framer + hiring signal, OR hiring + payment signal
+- *No-code subreddits* (`nocode`, `Webflow`, `Bubble`, etc.):
+  pass if hiring + web signal + payment signal
+- *Business subreddits* (`startups`, `SaaS`, `Entrepreneur`, etc.):
+  pass if website/landing page + hiring signal
+- *Marketing/industry subreddits*: pass if website + hiring signal
+- **Always exclude**: tutorials, feedback requests, complaints, framer pricing questions, job seekers
+
+**Fields tracked:** Name, URL, Subreddit (select), Content, Status (select: pending/approved/rejected),
+Post Date, Discovered, Review Notes, Notified (checkbox)
+
+**CLI interface** (used by reviewer session):
+- `python3 scripts/reddit_leads.py --list-pending` — prints JSON of pending leads
+- `python3 scripts/reddit_leads.py --update-status PAGE_ID STATUS NOTES` — approve/reject
+- `python3 scripts/reddit_leads.py --notify PAGE_ID` — send Discord embed + mark notified
+
+**Deferred improvements:**
+- Rate limiting — Reddit may throttle requests if many subreddits are fetched in rapid succession;
+  could add a small delay between feeds. Not added to keep it simple; failures are logged.
+- Smarter dedup — currently one Notion API call per filtered post; could batch with OR filters
+  once Notion supports them natively
+- Score/rank leads — could add a rough confidence score before saving to help the reviewer
+  prioritise; skipped as Claude's reasoning handles prioritisation naturally
+
+---
+
 ## Environment variables (`.env`)
 
 | Variable | Description |
 |---|---|
 | `NOTION_TOKEN` | Notion integration token (`ntn_xxx`) |
 | `NOTION_DATABASE_ID` | ID of the Framer Templates Notion DB |
+| `NOTION_REDDIT_LEADS_DB_ID` | ID of the Reddit Leads Notion DB |
 | `DISCORD_WEBHOOK_URL` | Discord webhook for new template notifications |
+| `DISCORD_WEBHOOK_URL_LEADS` | Discord webhook for approved Framer leads (separate channel) |
 | `DISCORD_ALERTS_WEBHOOK_URL` | Discord webhook for system-level errors and warnings (separate channel) |
 
 ---

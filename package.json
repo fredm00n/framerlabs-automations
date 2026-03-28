@@ -2,7 +2,8 @@
   "name": "claude-automations",
   "type": "module",
   "scripts": {
-    "framer-templates": "python3 scripts/framer_templates.py"
+    "framer-templates": "python3 scripts/framer_templates.py",
+    "reddit-leads": "python3 scripts/reddit_leads.py"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
