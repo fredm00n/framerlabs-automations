@@ -223,13 +223,19 @@ class TestFetchRedditPosts(unittest.TestCase):
         self.assertEqual(posts, [])
 
     @patch('scripts.reddit_leads.http_get')
-    def test_malformed_xml_returns_empty_list(self, mock_get):
+    def test_malformed_xml_returns_none(self, mock_get):
         mock_get.return_value = _MALFORMED_FEED
         posts = fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss')
-        self.assertEqual(posts, [])
+        self.assertIsNone(posts)
 
     @patch('scripts.reddit_leads.http_get', side_effect=Exception('network error'))
-    def test_fetch_error_returns_empty_list(self, mock_get):
+    def test_fetch_error_returns_none(self, mock_get):
+        posts = fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss')
+        self.assertIsNone(posts)
+
+    @patch('scripts.reddit_leads.http_get')
+    def test_empty_feed_returns_empty_list_not_none(self, mock_get):
+        mock_get.return_value = _EMPTY_FEED
         posts = fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss')
         self.assertEqual(posts, [])
 
@@ -596,11 +602,23 @@ class TestMain(unittest.TestCase):
         'DISCORD_ALERTS_WEBHOOK_URL': 'https://discord.com/alerts',
     })
     @patch('scripts.reddit_leads._warn_discord')
-    @patch('scripts.reddit_leads.fetch_reddit_posts', return_value=[])
+    @patch('scripts.reddit_leads.fetch_reddit_posts', return_value=None)
     def test_warns_when_all_fetches_fail(self, mock_fetch, mock_warn):
         from scripts.reddit_leads import main
         main()
         mock_warn.assert_called_once()
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+    })
+    @patch('scripts.reddit_leads._warn_discord')
+    @patch('scripts.reddit_leads.fetch_reddit_posts', return_value=[])
+    def test_empty_feeds_do_not_count_as_errors(self, mock_fetch, mock_warn):
+        """An empty feed (valid but no entries) must not increment fetch_errors."""
+        from scripts.reddit_leads import main
+        main()
+        mock_warn.assert_not_called()
 
     @patch.dict('os.environ', {
         'NOTION_TOKEN': 'ntn_test',
@@ -686,7 +704,7 @@ class TestWriteSummary(unittest.TestCase):
     })
     @patch('scripts.reddit_leads._write_summary')
     @patch('scripts.reddit_leads._warn_discord')
-    @patch('scripts.reddit_leads.fetch_reddit_posts', return_value=[])
+    @patch('scripts.reddit_leads.fetch_reddit_posts', return_value=None)
     def test_main_summary_includes_unreachable_count(self, mock_fetch, mock_warn, mock_summary):
         from scripts.reddit_leads import main, REDDIT_FEEDS
         main()

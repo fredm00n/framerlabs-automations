@@ -2,7 +2,7 @@
 """
 Monitors Reddit RSS feeds for potential Framer freelance leads.
 
-Phase 1 (this script, runs every 2h via GitHub Actions):
+Phase 1 (this script, runs every 15 min via GitHub Actions):
   Fetch RSS → light keyword filter → dedup against Notion → save as "pending".
   No Discord notifications, no LLM reasoning.
 
@@ -71,6 +71,11 @@ _PAYMENT_SIGNALS = frozenset({
     'fixed price', 'compensation', '$', '£', '€',
 })
 _FRAMER_SIGNALS = frozenset({'framer'})
+_BUSINESS_WEB = frozenset({
+    'website', 'landing page', 'web design', 'web designer',
+    'web developer', 'framer', 'figma',
+})
+_MARKETING_WEB = frozenset({'website', 'landing page', 'web design', 'web designer'})
 
 # Posts matching these are almost always job seekers advertising, not clients
 _JOB_SEEKER_SIGNALS = frozenset({
@@ -119,14 +124,9 @@ def passes_light_filter(title: str, content: str, subreddit: str) -> bool:
             and _has(text, _PAYMENT_SIGNALS)
         )
 
-    _BUSINESS_WEB = frozenset({
-        'website', 'landing page', 'web design', 'web designer',
-        'web developer', 'framer', 'figma',
-    })
     if subreddit in _BUSINESS:
         return _has(text, _BUSINESS_WEB) and _has(text, _HIRE_SIGNALS)
 
-    _MARKETING_WEB = frozenset({'website', 'landing page', 'web design', 'web designer'})
     if subreddit in _MARKETING | _INDUSTRY:
         return _has(text, _MARKETING_WEB) and _has(text, _HIRE_SIGNALS)
 
@@ -210,13 +210,17 @@ def _clean_html(text: str) -> str:
 _ATOM_NS = {'atom': 'http://www.w3.org/2005/Atom'}
 
 
-def fetch_reddit_posts(subreddit: str, feed_url: str) -> list[dict]:
-    """Fetch and parse an Atom RSS feed, returning a list of post dicts."""
+def fetch_reddit_posts(subreddit: str, feed_url: str) -> list[dict] | None:
+    """Fetch and parse an Atom RSS feed.
+
+    Returns a list of post dicts on success (possibly empty for a feed with no
+    entries), or None if the feed could not be fetched or parsed.
+    """
     try:
         body = http_get(feed_url)
     except Exception as e:
         print(f'Failed to fetch r/{subreddit}: {e}')
-        return []
+        return None
 
     posts = []
     try:
@@ -242,6 +246,7 @@ def fetch_reddit_posts(subreddit: str, feed_url: str) -> list[dict]:
                 })
     except ET.ParseError as e:
         print(f'Failed to parse RSS for r/{subreddit}: {e}')
+        return None
 
     return posts
 
@@ -420,7 +425,7 @@ def main() -> None:
 
     for subreddit, feed_url in REDDIT_FEEDS.items():
         posts = fetch_reddit_posts(subreddit, feed_url)
-        if not posts:
+        if posts is None:
             fetch_errors += 1
             continue
         for post in posts:
