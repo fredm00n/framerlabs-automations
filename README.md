@@ -1,3 +1,10 @@
+
+```diff
++ +-+-+-+-+-+-+-+-+-+-+
++ |f|r|a|m|e|r|l|a|b|s|
++ +-+-+-+-+-+-+-+-+-+-+
+```
+
 # framerlabs-automations
 
 Community automations for the Framer ecosystem — powered by Python, GitHub Actions, and Claude AI.
