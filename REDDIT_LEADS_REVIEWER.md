@@ -64,8 +64,9 @@ python3 scripts/reddit_leads.py --update-status PAGE_ID approved "Brief reason"
 python3 scripts/reddit_leads.py --update-status PAGE_ID rejected "Brief reason"
 ```
 
-Example reasons:
-- `"Hiring a Framer developer for landing page, has budget"`
+Example reasons (approved leads appear in Discord — make them explanatory, 1-2 sentences):
+- `"Client with a SaaS product actively hiring a Framer designer for a landing page, mentions budget and timeline"`
+- `"Agency looking for a long-term web dev partner for full website builds — clear intent to pay for ongoing work"`
 - `"Asking for feedback on existing site, not hiring"`
 - `"Job seeker advertising services"`
 
