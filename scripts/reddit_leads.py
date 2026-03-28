@@ -393,6 +393,18 @@ def _warn_discord(message: str) -> None:
         print(f'Failed to send Discord alert: {e}')
 
 
+def _write_summary(text: str) -> None:
+    """Append a markdown summary to the GitHub Actions job summary file, if running in CI."""
+    path = os.environ.get('GITHUB_STEP_SUMMARY')
+    if not path:
+        return
+    try:
+        with open(path, 'a') as f:
+            f.write(text + '\n')
+    except OSError:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Main monitoring flow
 # ---------------------------------------------------------------------------
@@ -433,6 +445,10 @@ def main() -> None:
         )
 
     print(f'Done. Saved {total_saved} new lead(s). ({fetch_errors} subreddit(s) unreachable)')
+    _write_summary(
+        f'## Reddit Leads Monitor\n'
+        f'📥 {total_saved} new lead(s) saved · {fetch_errors}/{len(REDDIT_FEEDS)} subreddit(s) unreachable'
+    )
 
 
 # ---------------------------------------------------------------------------

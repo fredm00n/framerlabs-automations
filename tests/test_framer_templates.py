@@ -591,5 +591,81 @@ class TestWarnDiscord(unittest.TestCase):
             ft._warn_discord('msg')  # must not raise
 
 
+# ---------------------------------------------------------------------------
+# _write_summary
+# ---------------------------------------------------------------------------
+
+class TestWriteSummary(unittest.TestCase):
+
+    def tearDown(self):
+        os.environ.pop('GITHUB_STEP_SUMMARY', None)
+
+    def test_writes_to_file_when_env_set(self):
+        with patch.dict('os.environ', {'GITHUB_STEP_SUMMARY': '/tmp/summary.md'}), \
+             patch('builtins.open', mock_open()) as m:
+            ft._write_summary('## Framer Monitor\nhello')
+        m.assert_called_once_with('/tmp/summary.md', 'a')
+        m().write.assert_called_once_with('## Framer Monitor\nhello\n')
+
+    def test_no_op_when_env_not_set(self):
+        os.environ.pop('GITHUB_STEP_SUMMARY', None)
+        with patch('builtins.open') as m:
+            ft._write_summary('ignored')
+        m.assert_not_called()
+
+    def test_main_writes_summary_when_nothing_new(self):
+        template = {'slug': 's1', 'title': 'T1', 'url': 'u1', 'author': 'A',
+                    'author_slug': '', 'price': 'Free', 'thumbnail': '', 'published_at': ''}
+        with patch.dict('os.environ', {'NOTION_TOKEN': 'ntn_x', 'NOTION_DATABASE_ID': 'db',
+                                       'DISCORD_WEBHOOK_URL_TEMPLATES': 'https://h.com/w'}), \
+             patch('framer_templates.fetch_framer_templates', return_value=[template]), \
+             patch('framer_templates.get_seen_slugs', return_value={'s1'}), \
+             patch('framer_templates._warn_discord'), \
+             patch('framer_templates._write_summary') as mock_summary, \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            ft.main()
+        mock_summary.assert_called_once()
+        self.assertIn('No new templates', mock_summary.call_args[0][0])
+
+    def test_main_writes_summary_on_first_run(self):
+        templates = [
+            {'slug': f's{i}', 'title': f'T{i}', 'url': f'u{i}', 'author': 'A',
+             'author_slug': '', 'price': 'Free', 'thumbnail': '', 'published_at': ''}
+            for i in range(5)
+        ]
+        with patch.dict('os.environ', {'NOTION_TOKEN': 'ntn_x', 'NOTION_DATABASE_ID': 'db',
+                                       'DISCORD_WEBHOOK_URL_TEMPLATES': 'https://h.com/w'}), \
+             patch('framer_templates.fetch_framer_templates', return_value=templates), \
+             patch('framer_templates.get_seen_slugs', return_value=set()), \
+             patch('framer_templates._warn_discord'), \
+             patch('framer_templates.save_to_notion'), \
+             patch('framer_templates.notify_discord'), \
+             patch('framer_templates._write_summary') as mock_summary, \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            ft.main()
+        mock_summary.assert_called_once()
+        self.assertIn('First run', mock_summary.call_args[0][0])
+
+    def test_main_writes_summary_on_new_templates(self):
+        existing = {'slug': 'old', 'title': 'Old', 'url': 'u0', 'author': 'A',
+                    'author_slug': '', 'price': 'Free', 'thumbnail': '', 'published_at': ''}
+        new = {'slug': 'new', 'title': 'New', 'url': 'u1', 'author': 'A',
+               'author_slug': '', 'price': 'Free', 'thumbnail': '', 'published_at': ''}
+        with patch.dict('os.environ', {'NOTION_TOKEN': 'ntn_x', 'NOTION_DATABASE_ID': 'db',
+                                       'DISCORD_WEBHOOK_URL_TEMPLATES': 'https://h.com/w'}), \
+             patch('framer_templates.fetch_framer_templates', return_value=[existing, new]), \
+             patch('framer_templates.get_seen_slugs', return_value={'old'}), \
+             patch('framer_templates._warn_discord'), \
+             patch('framer_templates.save_to_notion'), \
+             patch('framer_templates.notify_discord'), \
+             patch('framer_templates._write_summary') as mock_summary, \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            ft.main()
+        mock_summary.assert_called_once()
+        summary_text = mock_summary.call_args[0][0]
+        self.assertIn('1 new template', summary_text)
+        self.assertIn('already tracked', summary_text)
+
+
 if __name__ == '__main__':
     unittest.main()
