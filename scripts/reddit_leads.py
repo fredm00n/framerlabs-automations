@@ -367,17 +367,14 @@ def mark_notified(page_id: str) -> None:
 
 def notify_discord_lead(lead: dict) -> None:
     """Send a Discord embed for an approved lead."""
-    description = (lead.get('content') or 'No description')[:300]
     review_notes = lead.get('review_notes', '')
-    if review_notes:
-        description += f"\n\n**Why this is a lead:** {review_notes}"
+    description = f"**Why this is a lead:** {review_notes}" if review_notes else ''
     embed = {
         'title': lead['title'][:256],
         'url': lead['url'],
         'description': description,
         'color': 0x00B0F4,
         'author': {'name': f"r/{lead['subreddit']}"},
-        'footer': {'text': 'Framer Lead'},
     }
     try:
         http_post(os.environ['DISCORD_WEBHOOK_URL_LEADS'], {'embeds': [embed]})

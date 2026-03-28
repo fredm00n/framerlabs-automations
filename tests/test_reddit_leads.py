@@ -489,6 +489,8 @@ class TestNotifyDiscordLead(unittest.TestCase):
         self.assertEqual(embed['title'], 'Hiring Framer dev')
         self.assertEqual(embed['url'], 'https://reddit.com/r/forhire/1')
         self.assertIn('forhire', embed['author']['name'])
+        self.assertNotIn('footer', embed)
+        self.assertNotIn('Need a Framer developer', embed['description'])
 
     @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
     @patch('scripts.reddit_leads.http_post')
@@ -503,8 +505,10 @@ class TestNotifyDiscordLead(unittest.TestCase):
         }
         notify_discord_lead(lead)
         embed = mock_post.call_args[0][1]['embeds'][0]
-        self.assertIn('Why this is a lead:', embed['description'])
-        self.assertIn('Clear budget and timeline', embed['description'])
+        self.assertEqual(
+            embed['description'],
+            '**Why this is a lead:** Clear budget and timeline for Framer landing page',
+        )
 
     @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
     @patch('scripts.reddit_leads.http_post')
@@ -516,7 +520,7 @@ class TestNotifyDiscordLead(unittest.TestCase):
         }
         notify_discord_lead(lead)
         embed = mock_post.call_args[0][1]['embeds'][0]
-        self.assertNotIn('Why this is a lead:', embed['description'])
+        self.assertEqual(embed['description'], '')
 
     @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
     @patch('scripts.reddit_leads.http_post', side_effect=Exception('webhook down'))
