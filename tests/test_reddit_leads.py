@@ -618,5 +618,79 @@ class TestMain(unittest.TestCase):
         mock_save.assert_not_called()
 
 
+# ---------------------------------------------------------------------------
+# _write_summary
+# ---------------------------------------------------------------------------
+
+import os
+from unittest.mock import mock_open
+import scripts.reddit_leads as rl
+
+
+class TestWriteSummary(unittest.TestCase):
+
+    def tearDown(self):
+        os.environ.pop('GITHUB_STEP_SUMMARY', None)
+
+    def test_writes_to_file_when_env_set(self):
+        with patch.dict('os.environ', {'GITHUB_STEP_SUMMARY': '/tmp/summary.md'}), \
+             patch('builtins.open', mock_open()) as m:
+            rl._write_summary('## Reddit Leads Monitor\nhello')
+        m.assert_called_once_with('/tmp/summary.md', 'a')
+        m().write.assert_called_once_with('## Reddit Leads Monitor\nhello\n')
+
+    def test_no_op_when_env_not_set(self):
+        os.environ.pop('GITHUB_STEP_SUMMARY', None)
+        with patch('builtins.open') as m:
+            rl._write_summary('ignored')
+        m.assert_not_called()
+
+    @patch.dict('os.environ', {'NOTION_TOKEN': 'ntn_test', 'NOTION_REDDIT_LEADS_DB_ID': 'db-test'})
+    @patch('scripts.reddit_leads._write_summary')
+    @patch('scripts.reddit_leads.fetch_reddit_posts', return_value=[])
+    def test_main_writes_summary_when_no_leads(self, mock_fetch, mock_summary):
+        from scripts.reddit_leads import main
+        main()
+        mock_summary.assert_called_once()
+        summary_text = mock_summary.call_args[0][0]
+        self.assertIn('0 new lead', summary_text)
+
+    @patch.dict('os.environ', {'NOTION_TOKEN': 'ntn_test', 'NOTION_REDDIT_LEADS_DB_ID': 'db-test'})
+    @patch('scripts.reddit_leads._write_summary')
+    @patch('scripts.reddit_leads.save_lead_to_notion')
+    @patch('scripts.reddit_leads.url_exists_in_notion', return_value=False)
+    @patch('scripts.reddit_leads.fetch_reddit_posts')
+    def test_main_writes_summary_with_saved_leads(self, mock_fetch, mock_exists, mock_save, mock_summary):
+        mock_fetch.return_value = [{
+            'title': 'Need Framer designer for landing page hire budget $500',
+            'url': 'https://reddit.com/r/forhire/1',
+            'subreddit': 'forhire',
+            'content': 'Need website landing page designer hire budget $500',
+            'post_date': '2024-03-01T10:00:00+00:00',
+        }]
+        from scripts.reddit_leads import main
+        main()
+        mock_summary.assert_called_once()
+        summary_text = mock_summary.call_args[0][0]
+        self.assertIn('new lead(s) saved', summary_text)
+        self.assertNotIn('0 new lead', summary_text)
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+        'DISCORD_ALERTS_WEBHOOK_URL': 'https://discord.com/alerts',
+    })
+    @patch('scripts.reddit_leads._write_summary')
+    @patch('scripts.reddit_leads._warn_discord')
+    @patch('scripts.reddit_leads.fetch_reddit_posts', return_value=[])
+    def test_main_summary_includes_unreachable_count(self, mock_fetch, mock_warn, mock_summary):
+        from scripts.reddit_leads import main, REDDIT_FEEDS
+        main()
+        mock_summary.assert_called_once()
+        summary_text = mock_summary.call_args[0][0]
+        self.assertIn(f'{len(REDDIT_FEEDS)}/{len(REDDIT_FEEDS)}', summary_text)
+        self.assertIn('unreachable', summary_text)
+
+
 if __name__ == '__main__':
     unittest.main()

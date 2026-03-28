@@ -262,6 +262,15 @@ def _warn_discord(message: str) -> None:
         print(f'Failed to send Discord alert: {e}')
 
 
+def _write_summary(text: str) -> None:
+    """Append a markdown summary to the GitHub Actions job summary file, if running in CI."""
+    path = os.environ.get('GITHUB_STEP_SUMMARY')
+    if not path:
+        return
+    with open(path, 'a') as f:
+        f.write(text + '\n')
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -292,6 +301,7 @@ def main() -> None:
 
     if not new_templates:
         print('Nothing new. All done.')
+        _write_summary(f'## Framer Monitor\n✓ No new templates · {len(seen_slugs)} already tracked')
         return
 
     if is_first_run:
@@ -310,6 +320,10 @@ def main() -> None:
 
     verb = 'Seeded' if is_first_run else 'Notified'
     print(f'Done. {verb} {len(new_templates)} template(s).')
+    if is_first_run:
+        _write_summary(f'## Framer Monitor\n🌱 First run — seeded {len(new_templates)} template(s) silently')
+    else:
+        _write_summary(f'## Framer Monitor\n✨ {len(new_templates)} new template(s) found · {len(seen_slugs)} already tracked')
 
 
 if __name__ == '__main__':
