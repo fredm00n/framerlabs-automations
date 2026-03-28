@@ -1,3 +1,49 @@
+<!-- OPTION 1: Box letters (your original) -->
+```
++-+-+-+-+-+-+-+-+-+-+
+|f|r|a|m|e|r|l|a|b|s|
++-+-+-+-+-+-+-+-+-+-+
+```
+
+<!-- OPTION 2: Big block letters -->
+```
+ _____ ____      _    __  __ _____ ____  _        _    ____  ____
+|  ___|  _ \    / \  |  \/  | ____|  _ \| |      / \  | __ )/ ___|
+| |_  | |_) |  / _ \ | |\/| |  _| | |_) | |     / _ \ |  _ \\___ \
+|  _| |  _ <  / ___ \| |  | | |___|  _ <| |___ / ___ \| |_) |___) |
+|_|   |_| \_\/_/   \_\_|  |_|_____|_| \_\_____/_/   \_\____/|____/
+```
+
+<!-- OPTION 3: Minimal with dots -->
+```
+· f r a m e r l a b s ·
+```
+
+<!-- OPTION 4: Double-line box -->
+```
+╔═══════════════════════╗
+║   f r a m e r l a b s ║
+╚═══════════════════════╝
+```
+
+<!-- OPTION 5: Slant -->
+```
+    ____                            __      __
+   / __/________ _____ ___  ___  __/ /___ _/ /_  _____
+  / /_/ ___/ __ `/ __ `__ \/ _ \/ ___/ / __ `/ __ \/ ___/
+ / __/ /  / /_/ / / / / / /  __/ /  / / /_/ / /_/ (__  )
+/_/ /_/   \__,_/_/ /_/ /_/\___/_/  /_/\__,_/_.___/____/
+```
+
+<!-- OPTION 6: Compact badge style -->
+```
+┌─────────────────────────────────────┐
+│  framerlabs · community automations │
+└─────────────────────────────────────┘
+```
+
+<!-- END OPTIONS — remove the ones you don't like, keep one -->
+
 # framerlabs-automations
 
 Community automations for the Framer ecosystem — powered by Python, GitHub Actions, and Claude AI.
