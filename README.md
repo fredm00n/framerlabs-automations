@@ -18,9 +18,9 @@
 ```
 
 ```diff
-  +-+-+-+-+-+-+-+-+-+-+
+- +-+-+-+-+-+-+-+-+-+-+
 + |f|r|a|m|e|r|l|a|b|s|
-  +-+-+-+-+-+-+-+-+-+-+
+- +-+-+-+-+-+-+-+-+-+-+
 ```
 
 <!-- COLOR DEMO 2: ANSI escape codes (GitHub support, may not render everywhere) -->
