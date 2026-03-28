@@ -398,8 +398,11 @@ def _write_summary(text: str) -> None:
     path = os.environ.get('GITHUB_STEP_SUMMARY')
     if not path:
         return
-    with open(path, 'a') as f:
-        f.write(text + '\n')
+    try:
+        with open(path, 'a') as f:
+            f.write(text + '\n')
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------------------
