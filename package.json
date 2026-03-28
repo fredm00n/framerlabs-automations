@@ -1,5 +1,5 @@
 {
-  "name": "claude-automations",
+  "name": "framerlabs-automations",
   "type": "module",
   "scripts": {
     "framer-templates": "python3 scripts/framer_templates.py",

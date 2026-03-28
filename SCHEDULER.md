@@ -1,6 +1,6 @@
 # Scheduler instructions (Tier 2 — Self-Improvement Loop)
 
-Script execution (Tier 1) runs on GitHub Actions cron every 2 hours — see `.github/workflows/framer-monitor.yml`. This scheduler handles only code review and improvement.
+Script execution (Tier 1) runs on GitHub Actions cron every 15 minutes — see `.github/workflows/`. This scheduler handles only code review and improvement.
 
 ## Step 1 — Review for improvements
 
@@ -14,7 +14,7 @@ Review the code in `scripts/` and check recent GitHub Actions run logs for error
 ## Step 2 — Check for existing open PRs
 
 Before implementing anything, use the GitHub MCP tools to list all open PRs in
-`fredm00n/claude-automations`. If any open PR already addresses the improvement
+`fredm00n/framerlabs-automations`. If any open PR already addresses the improvement
 you're considering (even partially or under a different name), skip that
 improvement entirely and exit cleanly. Do not open duplicate PRs.
 

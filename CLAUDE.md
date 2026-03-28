@@ -1,6 +1,6 @@
-# claude-automations
+# framerlabs-automations
 
-A private repository of automations run by Claude on a scheduled task runner.
+A public community repository of automations run by Claude on a scheduled task runner.
 Each script monitors something, persists state in Notion, and notifies via Discord.
 
 ## Session modes
@@ -21,8 +21,9 @@ There are three types of sessions:
 
 ### Two-Tier Execution
 
-- **Tier 1 — GitHub Actions cron** (every 2 hours): Runs Python monitoring scripts automatically. No LLM needed, no token cost. Defined in `.github/workflows/framer-monitor.yml`. Secrets are stored as GitHub Actions repository secrets.
-- **Tier 2 — Claude Code VM** (1x/day): Reviews code and recent GitHub Actions run logs for improvements, checks for existing open PRs, and implements self-contained fixes or enhancements. Defined in `SCHEDULER.md`.
+- **Tier 1 — GitHub Actions cron** (every 15 minutes): Runs Python monitoring scripts automatically. No LLM needed, no token cost. Defined in `.github/workflows/`. Secrets are stored as GitHub Actions repository secrets.
+- **Tier 2a — Claude Code VM — self-improvement** (1x/day): Reviews code and recent GitHub Actions run logs for improvements, checks for existing open PRs, and implements self-contained fixes or enhancements. Defined in `SCHEDULER.md`.
+- **Tier 2b — Claude Code VM — leads reviewer** (hourly, Haiku): Reviews pending Reddit leads with reasoning, approves or rejects each one, and notifies Discord for approved leads. Defined in `REDDIT_LEADS_REVIEWER.md`.
 
 ### Runtime
 Scripts are written in **Python 3** (stdlib only, no pip dependencies).
@@ -31,7 +32,7 @@ Node.js is available but has no DNS access in the scheduler VM — do not use it
 ### State persistence
 Each script uses a **Notion database** to track state between runs.
 The Notion REST API is called directly (Bearer token auth) — no MCP, no ORM.
-Notion DB IDs live in `.env`.
+Notion DB IDs are stored as GitHub Actions repository secrets.
 
 ### Secrets
 Stored as GitHub Actions repository secrets. For local development, create a `.env` file
@@ -39,8 +40,8 @@ at the repo root using `.env.example` as a template — it is gitignored and nev
 Never log or echo secret values.
 
 ### Notifications
-- **Data notifications** (`DISCORD_WEBHOOK_URL`): new discoveries, one message per item, not batched.
-- **System alerts** (`DISCORD_ALERTS_WEBHOOK_URL`): system-level warnings and errors (e.g. RSC parse failure, unexpected API errors). Separate channel so operational issues don't get lost in data traffic. All scripts must use `DISCORD_ALERTS_WEBHOOK_URL` for system alerts, not `DISCORD_WEBHOOK_URL`.
+- **Data notifications** (`DISCORD_WEBHOOK_URL_TEMPLATES`, `DISCORD_WEBHOOK_URL_LEADS`): new discoveries, one message per item, not batched. Each script has its own webhook/channel.
+- **System alerts** (`DISCORD_ALERTS_WEBHOOK_URL`): system-level warnings and errors (e.g. RSC parse failure, unexpected API errors). Separate channel so operational issues don't get lost in data traffic. All scripts must use `DISCORD_ALERTS_WEBHOOK_URL` for system alerts, not the data webhooks.
 
 ---
 
@@ -98,10 +99,10 @@ Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort
 Monitors Reddit RSS feeds across 43 subreddits for potential Framer freelance leads.
 
 **Two-phase design:**
-- **Phase 1 — Light filter** (this script, runs every 2h via GitHub Actions): Fetches RSS feeds,
+- **Phase 1 — Light filter** (this script, runs every 15 min via GitHub Actions): Fetches RSS feeds,
   applies keyword-based filtering, deduplicates against Notion, saves candidates as `"pending"`.
   No Discord notifications, no LLM reasoning.
-- **Phase 2 — Claude review** (daily dedicated session, see `REDDIT_LEADS_REVIEWER.md`):
+- **Phase 2 — Claude review** (hourly dedicated session on Haiku, see `REDDIT_LEADS_REVIEWER.md`):
   Reads pending leads from Notion, evaluates each with reasoning, marks approved/rejected,
   notifies Discord only for approved leads.
 
@@ -140,7 +141,7 @@ Post Date, Discovered, Review Notes, Notified (checkbox)
 
 ---
 
-## Environment variables (`.env`)
+## Environment variables
 
 | Variable | Description |
 |---|---|
@@ -185,7 +186,7 @@ Read CLAUDE.md and SCHEDULER.md, then follow the instructions in SCHEDULER.md.
 
 1. Create `scripts/<name>.py`
 2. Create a Notion DB under the Claude Automations parent page
-3. Add the DB ID to `.env` and as a GitHub Actions repository secret
+3. Add the DB ID as a GitHub Actions repository secret
 4. Add a `"<name>": "python3 scripts/<name>.py"` entry to `package.json` scripts
 5. Add the script to the GitHub Actions cron workflow (`.github/workflows/framer-monitor.yml` or a new workflow file if it needs a different schedule)
 6. Create `tests/test_<name>.py` covering the script's core functions

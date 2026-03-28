@@ -1,4 +1,4 @@
-# Reddit Leads Reviewer (Daily Dedicated Session)
+# Reddit Leads Reviewer (Hourly Dedicated Session)
 
 Review Reddit posts that passed the light keyword filter and decide which are genuine
 Framer freelance leads worth pursuing.
@@ -10,14 +10,12 @@ Read CLAUDE.md and REDDIT_LEADS_REVIEWER.md, then follow the instructions in RED
 
 ---
 
-## Step 1 — Load credentials
+## Step 1 — Verify credentials
 
-Use the `Read` tool to open `.env` and extract:
+Ensure the following environment variables are available (set by the scheduled trigger):
 - `NOTION_TOKEN`
 - `NOTION_REDDIT_LEADS_DB_ID`
 - `DISCORD_WEBHOOK_URL_LEADS`
-
-Set them as environment variables using `export` in Bash, or pass them inline to each command.
 
 ---
 
@@ -89,5 +87,5 @@ This sends a Discord embed to the leads channel and marks the lead as Notified i
 
 - Process all pending leads in a single session — do not leave any as `pending`
 - Use your judgment; it is better to reject an ambiguous post than to spam the Discord channel
-- If the script fails with a missing env var error, check that `.env` contains
-  `NOTION_REDDIT_LEADS_DB_ID` and `DISCORD_WEBHOOK_URL_LEADS`
+- If the script fails with a missing env var error, check that the scheduled trigger
+  provides `NOTION_REDDIT_LEADS_DB_ID` and `DISCORD_WEBHOOK_URL_LEADS`
