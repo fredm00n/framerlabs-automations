@@ -6,8 +6,9 @@ Community automations for the Framer ecosystem — powered by Python, GitHub Act
 
 A set of scripts that monitor things useful to the Framer community, persist state in Notion, and post to Discord. The architecture has two tiers:
 
-- **Tier 1 — GitHub Actions cron**: Python scripts run every 2 hours. No LLM, no token cost. Just fast, cheap data collection.
-- **Tier 2 — Daily Claude sessions**: Claude reads the collected data and applies reasoning to filter, approve, and act on it. Claude also reviews its own code and ships improvements as PRs — more on that below.
+- **Tier 1 — GitHub Actions cron**: Python scripts run every 15 minutes. No LLM, no token cost. Just fast, cheap data collection.
+- **Tier 2a — Self-improvement** (daily): Claude reviews its own code and recent CI logs, then ships improvements as PRs — more on that below.
+- **Tier 2b — Leads reviewer** (hourly, Claude Haiku): Claude reads pending Reddit leads, applies reasoning to filter genuine hire requests, and posts approved ones to Discord.
 
 ---
 
@@ -16,20 +17,18 @@ A set of scripts that monitor things useful to the Framer community, persist sta
 ### Framer Templates Monitor
 Watches the [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort=recent) for new templates and posts them to Discord as they appear.
 
-Fetches directly from Framer's Next.js RSC endpoint — no headless browser, no scraping library.
-
 ### Reddit Leads Monitor
 Monitors 43 subreddits for posts from people looking to hire Framer designers or developers, and surfaces them in a Discord channel.
 
 This one runs in two phases:
 
-**Phase 1 — Light filter (every 2h, GitHub Actions, no LLM)**
+**Phase 1 — Light filter (every 15 min, GitHub Actions, no LLM)**
 Fetches Reddit RSS feeds, applies a keyword filter tuned per subreddit category (hiring boards, design communities, startups, etc.), and saves candidates to a Notion database as `pending`. Fast and cheap.
 
-**Phase 2 — Claude review (daily, reasoning enabled)**
+**Phase 2 — Claude review (hourly on Claude Haiku, reasoning enabled)**
 A dedicated Claude Code session reads all pending leads from Notion, evaluates each one with full reasoning (is this a genuine hire request? is there budget? does it fit Framer work?), marks them `approved` or `rejected`, and posts only the approved ones to Discord.
 
-This two-phase approach eliminates the false positives you get from pure keyword matching, while keeping the LLM cost low by only running reasoning once a day on a small filtered set.
+This two-phase approach eliminates the false positives you get from pure keyword matching, while keeping the LLM cost low by running reasoning hourly on a small filtered set.
 
 ---
 

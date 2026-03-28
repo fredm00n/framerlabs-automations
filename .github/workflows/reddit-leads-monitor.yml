@@ -2,7 +2,7 @@ name: Reddit Leads Monitor
 
 on:
   schedule:
-    - cron: "30 */2 * * *" # offset 30 min from framer-monitor to spread load
+    - cron: "7/15 * * * *" # offset 7 min from framer-monitor to spread load
   workflow_dispatch:
 
 jobs:

@@ -396,6 +396,45 @@ class TestGetPendingLeads(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# TestGetLeadById
+# ---------------------------------------------------------------------------
+
+class TestGetLeadById(unittest.TestCase):
+
+    @patch('scripts.reddit_leads.http_get')
+    def test_parses_page(self, mock_get):
+        mock_get.return_value = json.dumps({
+            'id': 'page-xyz',
+            'properties': {
+                'Name': {'title': [{'plain_text': 'Hiring Framer dev'}]},
+                'URL': {'url': 'https://reddit.com/r/forhire/1'},
+                'Subreddit': {'select': {'name': 'forhire'}},
+                'Content': {'rich_text': [{'plain_text': 'Need a developer'}]},
+                'Review Notes': {'rich_text': [{'plain_text': 'Good lead with budget'}]},
+            },
+        })
+        lead = get_lead_by_id('page-xyz')
+        self.assertEqual(lead['page_id'], 'page-xyz')
+        self.assertEqual(lead['title'], 'Hiring Framer dev')
+        self.assertEqual(lead['review_notes'], 'Good lead with budget')
+
+    @patch('scripts.reddit_leads.http_get')
+    def test_empty_review_notes(self, mock_get):
+        mock_get.return_value = json.dumps({
+            'id': 'page-xyz',
+            'properties': {
+                'Name': {'title': [{'plain_text': 'Test'}]},
+                'URL': {'url': 'https://reddit.com/1'},
+                'Subreddit': {'select': {'name': 'framer'}},
+                'Content': {'rich_text': []},
+                'Review Notes': {'rich_text': []},
+            },
+        })
+        lead = get_lead_by_id('page-xyz')
+        self.assertEqual(lead['review_notes'], '')
+
+
+# ---------------------------------------------------------------------------
 # TestUpdateLeadStatus
 # ---------------------------------------------------------------------------
 
@@ -450,6 +489,34 @@ class TestNotifyDiscordLead(unittest.TestCase):
         self.assertEqual(embed['title'], 'Hiring Framer dev')
         self.assertEqual(embed['url'], 'https://reddit.com/r/forhire/1')
         self.assertIn('forhire', embed['author']['name'])
+
+    @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
+    @patch('scripts.reddit_leads.http_post')
+    def test_includes_review_notes_in_embed(self, mock_post):
+        mock_post.return_value = {}
+        lead = {
+            'title': 'Hiring Framer dev',
+            'url': 'https://reddit.com/r/forhire/1',
+            'subreddit': 'forhire',
+            'content': 'Need a Framer developer',
+            'review_notes': 'Clear budget and timeline for Framer landing page',
+        }
+        notify_discord_lead(lead)
+        embed = mock_post.call_args[0][1]['embeds'][0]
+        self.assertIn('Why this is a lead:', embed['description'])
+        self.assertIn('Clear budget and timeline', embed['description'])
+
+    @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
+    @patch('scripts.reddit_leads.http_post')
+    def test_omits_review_notes_when_empty(self, mock_post):
+        mock_post.return_value = {}
+        lead = {
+            'title': 'Test', 'url': 'https://x.com', 'subreddit': 'framer',
+            'content': 'Some content', 'review_notes': '',
+        }
+        notify_discord_lead(lead)
+        embed = mock_post.call_args[0][1]['embeds'][0]
+        self.assertNotIn('Why this is a lead:', embed['description'])
 
     @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
     @patch('scripts.reddit_leads.http_post', side_effect=Exception('webhook down'))

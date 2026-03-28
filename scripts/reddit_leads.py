@@ -327,12 +327,14 @@ def get_lead_by_id(page_id: str) -> dict:
     title_rt = props.get('Name', {}).get('title', [])
     subreddit_sel = props.get('Subreddit', {}).get('select') or {}
     content_rt = props.get('Content', {}).get('rich_text', [])
+    notes_rt = props.get('Review Notes', {}).get('rich_text', [])
     return {
         'page_id': page['id'],
         'title': title_rt[0]['plain_text'] if title_rt else '',
         'url': props.get('URL', {}).get('url', '') or '',
         'subreddit': subreddit_sel.get('name', ''),
         'content': content_rt[0]['plain_text'] if content_rt else '',
+        'review_notes': notes_rt[0]['plain_text'] if notes_rt else '',
     }
 
 
@@ -365,10 +367,14 @@ def mark_notified(page_id: str) -> None:
 
 def notify_discord_lead(lead: dict) -> None:
     """Send a Discord embed for an approved lead."""
+    description = (lead.get('content') or 'No description')[:300]
+    review_notes = lead.get('review_notes', '')
+    if review_notes:
+        description += f"\n\n**Why this is a lead:** {review_notes}"
     embed = {
         'title': lead['title'][:256],
         'url': lead['url'],
-        'description': (lead.get('content') or 'No description')[:300],
+        'description': description,
         'color': 0x00B0F4,
         'author': {'name': f"r/{lead['subreddit']}"},
         'footer': {'text': 'Framer Lead'},
