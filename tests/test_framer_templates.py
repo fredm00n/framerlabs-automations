@@ -409,7 +409,7 @@ _DISCORD_TEMPLATE = {
 class TestNotifyDiscord(unittest.TestCase):
 
     def setUp(self):
-        os.environ['DISCORD_WEBHOOK_URL'] = 'https://discord.com/api/webhooks/test'
+        os.environ['DISCORD_WEBHOOK_URL_TEMPLATES'] = 'https://discord.com/api/webhooks/test'
 
     def test_posts_embed_to_webhook(self):
         with patch('framer_templates.http_post', return_value={}) as mock_post:
@@ -477,7 +477,7 @@ class TestMain(unittest.TestCase):
     def setUp(self):
         os.environ['NOTION_TOKEN'] = 'test_token'
         os.environ['NOTION_DATABASE_ID'] = 'test_db_id'
-        os.environ['DISCORD_WEBHOOK_URL'] = 'https://discord.com/api/webhooks/test'
+        os.environ['DISCORD_WEBHOOK_URL_TEMPLATES'] = 'https://discord.com/api/webhooks/test'
 
     def _run(self, templates, seen_slugs):
         """Run main() with all I/O mocked; return (save_mock, notify_mock)."""
@@ -579,7 +579,7 @@ class TestWarnDiscord(unittest.TestCase):
         self.assertIn('test warning message', payload['content'])
 
     def test_uses_alerts_webhook_not_data_webhook(self):
-        os.environ['DISCORD_WEBHOOK_URL'] = 'https://discord.com/api/webhooks/data'
+        os.environ['DISCORD_WEBHOOK_URL_TEMPLATES'] = 'https://discord.com/api/webhooks/data'
         with patch('framer_templates.http_post', return_value={}) as mock_post:
             ft._warn_discord('alert')
         posted_url = mock_post.call_args[0][0]

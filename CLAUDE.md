@@ -34,8 +34,9 @@ The Notion REST API is called directly (Bearer token auth) — no MCP, no ORM.
 Notion DB IDs live in `.env`.
 
 ### Secrets
-Stored in `.env` at the repo root (committed — this is a private personal repo).
-Never log or echo secret values. If the repo ever goes public, rotate all secrets first.
+Stored as GitHub Actions repository secrets. For local development, create a `.env` file
+at the repo root using `.env.example` as a template — it is gitignored and never committed.
+Never log or echo secret values.
 
 ### Notifications
 - **Data notifications** (`DISCORD_WEBHOOK_URL`): new discoveries, one message per item, not batched.
@@ -146,7 +147,7 @@ Post Date, Discovered, Review Notes, Notified (checkbox)
 | `NOTION_TOKEN` | Notion integration token (`ntn_xxx`) |
 | `NOTION_DATABASE_ID` | ID of the Framer Templates Notion DB |
 | `NOTION_REDDIT_LEADS_DB_ID` | ID of the Reddit Leads Notion DB |
-| `DISCORD_WEBHOOK_URL` | Discord webhook for new template notifications |
+| `DISCORD_WEBHOOK_URL_TEMPLATES` | Discord webhook for new template notifications |
 | `DISCORD_WEBHOOK_URL_LEADS` | Discord webhook for approved Framer leads (separate channel) |
 | `DISCORD_ALERTS_WEBHOOK_URL` | Discord webhook for system-level errors and warnings (separate channel) |
 
