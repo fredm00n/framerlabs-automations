@@ -1,43 +1,9 @@
-```
-+-+-+-+-+-+-+-+-+-+-+
-|f|r|a|m|e|r|l|a|b|s|
-+-+-+-+-+-+-+-+-+-+-+
-```
 
-<!-- COLOR DEMO 1: Diff syntax — green (+) and red (-) lines -->
 ```diff
 + +-+-+-+-+-+-+-+-+-+-+
 + |f|r|a|m|e|r|l|a|b|s|
 + +-+-+-+-+-+-+-+-+-+-+
 ```
-
-```diff
-- +-+-+-+-+-+-+-+-+-+-+
-- |f|r|a|m|e|r|l|a|b|s|
-- +-+-+-+-+-+-+-+-+-+-+
-```
-
-```diff
-- +-+-+-+-+-+-+-+-+-+-+
-+ |f|r|a|m|e|r|l|a|b|s|
-- +-+-+-+-+-+-+-+-+-+-+
-```
-
-<!-- COLOR DEMO 2: ANSI escape codes (GitHub support, may not render everywhere) -->
-```ansi
-[32m+-+-+-+-+-+-+-+-+-+-+[0m
-[36m|[33mf[36m|[33mr[36m|[33ma[36m|[33mm[36m|[33me[36m|[33mr[36m|[33ml[36m|[33ma[36m|[33mb[36m|[33ms[36m|[0m
-[32m+-+-+-+-+-+-+-+-+-+-+[0m
-```
-
-<!-- COLOR DEMO 3: ANSI bold + color -->
-```ansi
-[1;35m+-+-+-+-+-+-+-+-+-+-+[0m
-[1;35m|[1;37mf[1;35m|[1;37mr[1;35m|[1;37ma[1;35m|[1;37mm[1;35m|[1;37me[1;35m|[1;37mr[1;35m|[1;37ml[1;35m|[1;37ma[1;35m|[1;37mb[1;35m|[1;37ms[1;35m|[0m
-[1;35m+-+-+-+-+-+-+-+-+-+-+[0m
-```
-
-<!-- END COLOR DEMOS — remove all demos above, keep just the one you like -->
 
 # framerlabs-automations
 
