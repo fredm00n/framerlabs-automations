@@ -13,6 +13,7 @@ import html as _html
 import json
 import os
 import re
+import ssl
 import sys
 import urllib.error
 import urllib.request
@@ -153,15 +154,21 @@ def load_dotenv() -> None:
 
 
 def http_get(url: str, headers: dict | None = None) -> str:
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
     req = urllib.request.Request(
         url,
         headers={'User-Agent': 'automation-bot/1.0', **(headers or {})},
     )
-    with urllib.request.urlopen(req, timeout=30) as r:
+    with urllib.request.urlopen(req, context=ctx, timeout=30) as r:
         return r.read().decode('utf-8')
 
 
 def http_post(url: str, data: dict, headers: dict | None = None) -> dict:
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
     body = json.dumps(data).encode('utf-8')
     req = urllib.request.Request(
         url,
@@ -169,12 +176,15 @@ def http_post(url: str, data: dict, headers: dict | None = None) -> dict:
         headers={'Content-Type': 'application/json', 'User-Agent': 'automation-bot/1.0', **(headers or {})},
         method='POST',
     )
-    with urllib.request.urlopen(req, timeout=30) as r:
+    with urllib.request.urlopen(req, context=ctx, timeout=30) as r:
         raw = r.read()
         return json.loads(raw) if raw else {}
 
 
 def http_patch(url: str, data: dict, headers: dict | None = None) -> dict:
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
     body = json.dumps(data).encode('utf-8')
     req = urllib.request.Request(
         url,
@@ -182,7 +192,7 @@ def http_patch(url: str, data: dict, headers: dict | None = None) -> dict:
         headers={'Content-Type': 'application/json', 'User-Agent': 'automation-bot/1.0', **(headers or {})},
         method='PATCH',
     )
-    with urllib.request.urlopen(req, timeout=30) as r:
+    with urllib.request.urlopen(req, context=ctx, timeout=30) as r:
         raw = r.read()
         return json.loads(raw) if raw else {}
 
