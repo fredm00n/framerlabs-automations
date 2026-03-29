@@ -208,6 +208,8 @@ def save_to_notion(template: dict) -> None:
         props['Published'] = {'date': {'start': template['published_at']}}
     if template.get('thumbnail'):
         props['Thumbnail'] = {'url': template['thumbnail']}
+    if template.get('author_slug'):
+        props['Author URL'] = {'url': f'https://www.framer.com/marketplace/profiles/{template["author_slug"]}/'}
 
     try:
         http_post(

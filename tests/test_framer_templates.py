@@ -378,6 +378,24 @@ class TestSaveToNotion(unittest.TestCase):
         retry_props = mock_post.call_args_list[1][0][1]['properties']
         self.assertNotIn('Thumbnail', retry_props)
 
+    def test_includes_author_url_when_slug_present(self):
+        t = {**_BASE_TEMPLATE, 'author_slug': 'alice-studio'}
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.save_to_notion(t)
+        props = mock_post.call_args[0][1]['properties']
+        self.assertIn('Author URL', props)
+        self.assertEqual(
+            props['Author URL']['url'],
+            'https://www.framer.com/marketplace/profiles/alice-studio/',
+        )
+
+    def test_excludes_author_url_when_slug_absent(self):
+        t = {**_BASE_TEMPLATE, 'author_slug': ''}
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.save_to_notion(t)
+        props = mock_post.call_args[0][1]['properties']
+        self.assertNotIn('Author URL', props)
+
     def test_400_without_thumbnail_reraises(self):
         error = urllib.error.HTTPError(None, 400, 'Bad Request', {}, None)
         with patch('framer_templates.http_post', side_effect=error):
