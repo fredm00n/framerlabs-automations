@@ -22,7 +22,7 @@ There are three types of sessions:
 ### Two-Tier Execution
 
 - **Tier 1 — GitHub Actions cron** (every 15 minutes): Runs Python monitoring scripts automatically. No LLM needed, no token cost. Defined in `.github/workflows/`. Secrets are stored as GitHub Actions repository secrets.
-- **Tier 2a — Claude Code VM — self-improvement** (1x/day): Reviews code and recent GitHub Actions run logs for improvements, checks for existing open PRs, and implements self-contained fixes or enhancements. Defined in `SCHEDULER.md`.
+- **Tier 2a — Claude Code VM — self-improvement** (1x/day): Reviews code and `logs/errors.jsonl` for improvements, checks for existing open PRs, and implements self-contained fixes or enhancements. Defined in `SCHEDULER.md`.
 - **Tier 2b — Claude Code VM — leads reviewer** (hourly, Haiku): Reviews pending Reddit leads with reasoning, approves or rejects each one, and notifies Discord for approved leads. Defined in `REDDIT_LEADS_REVIEWER.md`.
 
 ### Runtime
@@ -38,6 +38,17 @@ Notion DB IDs are stored as GitHub Actions repository secrets.
 Stored as GitHub Actions repository secrets. For local development, create a `.env` file
 at the repo root using `.env.example` as a template — it is gitignored and never committed.
 Never log or echo secret values.
+
+### Error logging
+Scripts append structured errors to `logs/errors.jsonl` (one JSON object per line).
+Each entry has: `timestamp` (ISO 8601 UTC), `script` name, `severity` (`warning` or `error`),
+`message`, and optional `context` dict. GitHub Actions commits this file after each run.
+The Tier 2a self-improvement session reads it locally (via `git pull`) to identify recurring
+issues and propose fixes. Critical errors are also sent to `DISCORD_ALERTS_WEBHOOK_URL`
+for immediate visibility.
+
+Log rotation: the self-improvement session removes entries older than 7 days after reading
+them, then commits the trimmed file.
 
 ### Notifications
 - **Data notifications** (`DISCORD_WEBHOOK_URL_TEMPLATES`, `DISCORD_WEBHOOK_URL_LEADS`): new discoveries, one message per item, not batched. Each script has its own webhook/channel.

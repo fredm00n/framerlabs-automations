@@ -19,6 +19,7 @@ import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime
+import error_log
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +231,7 @@ def fetch_reddit_posts(subreddit: str, feed_url: str) -> list[dict] | None:
         body = http_get(feed_url)
     except Exception as e:
         print(f'Failed to fetch r/{subreddit}: {e}')
+        error_log.log_error('reddit_leads', 'warning', f'Failed to fetch r/{subreddit}', {'feed_url': feed_url, 'error': str(e)})
         return None
 
     posts = []
@@ -256,6 +258,7 @@ def fetch_reddit_posts(subreddit: str, feed_url: str) -> list[dict] | None:
                 })
     except ET.ParseError as e:
         print(f'Failed to parse RSS for r/{subreddit}: {e}')
+        error_log.log_error('reddit_leads', 'warning', f'Failed to parse RSS for r/{subreddit}', {'error': str(e)})
         return None
 
     return posts
@@ -395,6 +398,11 @@ def notify_discord_lead(lead: dict) -> None:
         http_post(os.environ['DISCORD_WEBHOOK_URL_LEADS'], {'embeds': [embed]})
     except Exception as e:
         print(f'Discord notification failed for "{lead["title"]}": {e}')
+        error_log.log_error(
+            'reddit_leads', 'warning',
+            f'Discord notification failed for "{lead["title"]}"',
+            {'error': str(e)},
+        )
 
 
 def _warn_discord(message: str) -> None:
@@ -403,6 +411,7 @@ def _warn_discord(message: str) -> None:
         http_post(os.environ['DISCORD_ALERTS_WEBHOOK_URL'], {'content': message})
     except Exception as e:
         print(f'Failed to send Discord alert: {e}')
+        error_log.log_error('reddit_leads', 'warning', 'Failed to send Discord alert', {'error': str(e)})
 
 
 def _write_summary(text: str) -> None:
@@ -449,11 +458,21 @@ def main() -> None:
                 print(f'Saved: [r/{subreddit}] {post["title"]}')
             except Exception as e:
                 print(f'Error saving lead from r/{subreddit}: {e}')
+                error_log.log_error(
+                    'reddit_leads', 'error',
+                    f'Error saving lead from r/{subreddit}',
+                    {'url': post['url'], 'error': str(e)},
+                )
 
     if fetch_errors == len(REDDIT_FEEDS):
         _warn_discord(
             'WARNING: reddit_leads.py failed to fetch any subreddit feeds'
-            ' — possible network issue. Check GitHub Actions logs.'
+            ' — possible network issue. Check logs/errors.jsonl.'
+        )
+        error_log.log_error(
+            'reddit_leads', 'error',
+            'All subreddit feeds failed — possible network issue',
+            {'feed_count': len(REDDIT_FEEDS)},
         )
 
     print(f'Done. Saved {total_saved} new lead(s). ({fetch_errors} subreddit(s) unreachable)')
