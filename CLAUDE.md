@@ -83,7 +83,7 @@ Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort
 - **State:** Notion DB `Framer Templates` (ID in `NOTION_DATABASE_ID`)
 - **Notifications:** Discord webhook on each new template
 - **First run:** seeds the DB silently — no Discord spam
-- **Fields tracked:** title, slug, URL, author, price, discovered datetime, published datetime
+- **Fields tracked:** title, slug, URL, author, author URL, price, discovered datetime, published datetime
 - **Pagination:** fetches up to 2 pages (40 templates) per run; pages are cumulative (`?page=N` returns items 1–N×20), stops early when a page yields fewer than 20 new items
 
 **Deferred improvements:**
