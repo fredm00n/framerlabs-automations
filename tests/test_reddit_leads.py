@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Tests for scripts/reddit_leads.py"""
 import json
+import os
 import sys
 import unittest
 from datetime import datetime
 from unittest.mock import MagicMock, call, patch
 
 sys.path.insert(0, '.')
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts'))
 from scripts.reddit_leads import (
     _clean_html,
     fetch_reddit_posts,
@@ -644,7 +646,6 @@ class TestMain(unittest.TestCase):
 # _write_summary
 # ---------------------------------------------------------------------------
 
-import os
 from unittest.mock import mock_open
 import scripts.reddit_leads as rl
 
