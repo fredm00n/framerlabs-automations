@@ -113,15 +113,33 @@ def fetch_from_rsc() -> list[dict]:
 
 
 def _parse_rsc_body(body: str, seen: set, templates: list) -> None:
-    """Parse template items from an RSC body, appending new ones to templates in-place."""
-    search = '"item":{"id":'
+    """Parse template items from an RSC body, appending new ones to templates in-place.
+
+    The RSC stream may emit ``"item":{"id":`` with or without whitespace between
+    the colon and the opening brace (e.g. ``"item": {"id":``).  We search for the
+    key prefix ``"item":`` and then skip any intervening whitespace before
+    locating the ``{`` that starts the JSON object passed to
+    ``_extract_json_object``.
+    """
+    search = '"item":'
     pos = 0
     while True:
         idx = body.find(search, pos)
         if idx == -1:
             break
+        # Skip optional whitespace between "item": and the opening brace
+        obj_start = idx + len(search)
+        while obj_start < len(body) and body[obj_start] in ' \t\r\n':
+            obj_start += 1
+        if obj_start >= len(body) or body[obj_start] != '{':
+            pos = idx + 1
+            continue
         try:
-            item = _extract_json_object(body, idx + len('"item":'))
+            item = _extract_json_object(body, obj_start)
+            if 'id' not in item:
+                # Not a template item — advance and keep searching
+                pos = idx + 1
+                continue
             slug = item.get('slug', '')
             if slug and slug not in seen:
                 seen.add(slug)
@@ -137,12 +155,15 @@ def _parse_rsc_body(body: str, seen: set, templates: list) -> None:
                 templates.append({
                     'slug': slug,
                     'title': item.get('title', ''),
+                    'meta_title': item.get('metaTitle', ''),
                     'author': author,
                     'author_slug': author_slug,
                     'price': price,
                     'url': f'https://www.framer.com/marketplace/templates/{slug}/',
+                    'demo_url': item.get('publishedUrl', ''),
                     'thumbnail': item.get('thumbnail', ''),
                     'published_at': published_at,
+                    'remixes': item.get('remixes') or 0,
                 })
         except (ValueError, KeyError):
             pass
@@ -210,6 +231,12 @@ def save_to_notion(template: dict) -> None:
         'Price': {'rich_text': [{'text': {'content': template.get('price', '')}}]},
         'Discovered': {'date': {'start': datetime.now().isoformat()}},
     }
+    if template.get('meta_title'):
+        props['Meta Title'] = {'rich_text': [{'text': {'content': template['meta_title']}}]}
+    if template.get('demo_url'):
+        props['Demo URL'] = {'url': template['demo_url']}
+    if template.get('remixes'):
+        props['Remixes'] = {'number': template['remixes']}
     if template.get('published_at'):
         props['Published'] = {'date': {'start': template['published_at']}}
     if template.get('thumbnail'):
@@ -244,14 +271,21 @@ def notify_discord(template: dict) -> None:
     author = template.get('author', 'unknown')
     author_slug = template.get('author_slug', '')
     price = template.get('price', '?')
+    meta_title = template.get('meta_title', '')
+    demo_url = template.get('demo_url', '')
     if author_slug:
         author_text = f"[{author}](https://www.framer.com/marketplace/profiles/{author_slug}/)"
     else:
         author_text = author
+    description = f"by {author_text} · **{price}**"
+    if meta_title:
+        description += f"\n{meta_title}"
+    if demo_url:
+        description += f"\n[Live Demo]({demo_url})"
     embed: dict = {
         'title': template['title'],
         'url': template['url'],
-        'description': f"by {author_text} · **{price}**",
+        'description': description,
         'color': 0x5865F2,
     }
     if template.get('thumbnail'):

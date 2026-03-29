@@ -99,7 +99,7 @@ Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort
 
 **Deferred improvements:**
 - Categories/tags — previously noted as present in the RSC payload, but an inspection of the live payload (2026-03-27) found no category/tag fields at the item level. The RSC format may have changed, or categories may be on a different endpoint. Not pursued until confirmed present.
-- Existing Notion records lack the `Thumbnail` and `Published` properties — only new records saved after their respective PRs include them. Backfill via Notion API is possible but skipped as low priority
+- Existing Notion records lack the `Thumbnail`, `Published`, `Meta Title`, `Demo URL`, and `Remixes` properties — only new records saved after their respective PRs include them. Backfill via Notion API is possible but skipped as low priority.
 - RSC format is an internal Next.js mechanism — Framer could change the response structure without notice. When parsing yields < 5 templates a Discord alert is sent to `DISCORD_ALERTS_WEBHOOK_URL`; inspect the raw RSC payload and update `_extract_json_object` / the `"item":{"id":` search key
 - HTTP retry logic — transient network errors cause the whole run to abort; could add simple exponential backoff. Not added to keep stdlib-only code simple; scheduler will retry on next scheduled run
 - Richer HTTP error reporting — printing the response body on Notion API errors (4xx/5xx) would aid debugging; skipped as the existing error messages are sufficient for now
