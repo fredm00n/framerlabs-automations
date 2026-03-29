@@ -1,0 +1,16 @@
+{"timestamp": "2026-03-29T12:26:38.255344+00:00", "script": "framer_templates", "severity": "warning", "message": "Only 1 templates parsed from RSC \u2014 format may have changed", "context": {"count": 1}}
+{"timestamp": "2026-03-29T12:26:38.256330+00:00", "script": "framer_templates", "severity": "warning", "message": "Only 1 templates parsed from RSC \u2014 format may have changed", "context": {"count": 1}}
+{"timestamp": "2026-03-29T12:26:38.257866+00:00", "script": "framer_templates", "severity": "warning", "message": "Only 1 templates parsed from RSC \u2014 format may have changed", "context": {"count": 1}}
+{"timestamp": "2026-03-29T12:26:38.258698+00:00", "script": "framer_templates", "severity": "warning", "message": "Only 2 templates parsed from RSC \u2014 format may have changed", "context": {"count": 2}}
+{"timestamp": "2026-03-29T12:26:38.259062+00:00", "script": "framer_templates", "severity": "warning", "message": "Only 1 templates parsed from RSC \u2014 format may have changed", "context": {"count": 1}}
+{"timestamp": "2026-03-29T12:26:38.259302+00:00", "script": "framer_templates", "severity": "warning", "message": "Only 0 templates parsed from RSC \u2014 format may have changed", "context": {"count": 0}}
+{"timestamp": "2026-03-29T12:26:38.260533+00:00", "script": "framer_templates", "severity": "warning", "message": "Only 1 templates parsed from RSC \u2014 format may have changed", "context": {"count": 1}}
+{"timestamp": "2026-03-29T12:26:38.260805+00:00", "script": "framer_templates", "severity": "warning", "message": "Only 1 templates parsed from RSC \u2014 format may have changed", "context": {"count": 1}}
+{"timestamp": "2026-03-29T12:26:38.261266+00:00", "script": "framer_templates", "severity": "warning", "message": "Only 1 templates parsed from RSC \u2014 format may have changed", "context": {"count": 1}}
+{"timestamp": "2026-03-29T12:26:38.277202+00:00", "script": "framer_templates", "severity": "warning", "message": "Discord notification failed for \"Test Template\"", "context": {"error": "network error"}}
+{"timestamp": "2026-03-29T12:26:38.280169+00:00", "script": "framer_templates", "severity": "warning", "message": "Failed to send Discord alert", "context": {"error": "network error"}}
+{"timestamp": "2026-03-29T12:26:38.287934+00:00", "script": "reddit_leads", "severity": "warning", "message": "Failed to fetch r/forhire", "context": {"feed_url": "https://www.reddit.com/r/forhire/.rss", "error": "network error"}}
+{"timestamp": "2026-03-29T12:26:38.288474+00:00", "script": "reddit_leads", "severity": "warning", "message": "Failed to parse RSS for r/forhire", "context": {"error": "syntax error: line 1, column 0"}}
+{"timestamp": "2026-03-29T12:26:38.296498+00:00", "script": "reddit_leads", "severity": "error", "message": "All subreddit feeds failed \u2014 possible network issue", "context": {"feed_count": 43}}
+{"timestamp": "2026-03-29T12:26:38.299122+00:00", "script": "reddit_leads", "severity": "warning", "message": "Discord notification failed for \"Test\"", "context": {"error": "webhook down"}}
+{"timestamp": "2026-03-29T12:26:38.303936+00:00", "script": "reddit_leads", "severity": "error", "message": "All subreddit feeds failed \u2014 possible network issue", "context": {"feed_count": 43}}
