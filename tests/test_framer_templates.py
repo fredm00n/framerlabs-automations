@@ -104,11 +104,15 @@ class TestLoadDotenv(unittest.TestCase):
 
 def _rsc_item(slug, id_='abc', title='T', price='Free', author='A',
               author_slug='a-studio',
-              thumbnail='https://cdn.example.com/t.jpg', published='$D2024-01-15'):
+              thumbnail='https://cdn.example.com/t.jpg', published='$D2024-01-15',
+              meta_title='A Great Template', demo_url='https://demo.framer.website/',
+              remixes=5):
     return (
         f'"item":{{"id":"{id_}","slug":"{slug}","title":"{title}",'
+        f'"metaTitle":"{meta_title}",'
         f'"price":"{price}","creator":{{"name":"{author}","slug":"{author_slug}"}},'
-        f'"thumbnail":"{thumbnail}","publishedAt":"{published}"}}'
+        f'"thumbnail":"{thumbnail}","publishedAt":"{published}",'
+        f'"publishedUrl":"{demo_url}","remixes":{remixes}}}'
     )
 
 
@@ -131,7 +135,8 @@ class TestFetchFromRsc(unittest.TestCase):
         self.assertEqual(slugs, {'slug-a', 'slug-b'})
 
     def test_extracts_all_fields_correctly(self):
-        body = _rsc_item('cool-template', title='Cool Template', author='John Doe', author_slug='john-doe')
+        body = _rsc_item('cool-template', title='Cool Template', author='John Doe', author_slug='john-doe',
+                         meta_title='Portfolio Website', demo_url='https://cool.framer.website/', remixes=7)
         templates = self._fetch(body)
         t = templates[0]
         self.assertEqual(t['title'], 'Cool Template')
@@ -141,6 +146,9 @@ class TestFetchFromRsc(unittest.TestCase):
         self.assertEqual(t['url'], 'https://www.framer.com/marketplace/templates/cool-template/')
         self.assertEqual(t['thumbnail'], 'https://cdn.example.com/t.jpg')
         self.assertEqual(t['published_at'], '2024-01-15')  # $D prefix stripped
+        self.assertEqual(t['meta_title'], 'Portfolio Website')
+        self.assertEqual(t['demo_url'], 'https://cool.framer.website/')
+        self.assertEqual(t['remixes'], 7)
 
     def test_strips_one_dollar_from_rsc_encoded_price(self):
         # RSC encodes literal "$" as "$$"; stripping the first "$" yields the actual price
@@ -220,6 +228,13 @@ class TestFetchFromRsc(unittest.TestCase):
         self.assertEqual(mock_get.call_count, 2)
         self.assertEqual(len(templates), 40)
 
+    def test_parses_templates_when_item_colon_has_space(self):
+        # Regression: RSC format may emit "item": { instead of "item":{
+        body = _rsc_item('whitespace-slug', id_='77').replace('"item":{', '"item": {')
+        templates = self._fetch(body)
+        self.assertEqual(len(templates), 1)
+        self.assertEqual(templates[0]['slug'], 'whitespace-slug')
+
     def test_cumulative_pages_deduplicate_correctly(self):
         # page=2 from Framer is cumulative: it contains page=1 items + some new ones.
         # This page adds items 0-19 again (duplicates) plus 15 new items — total 35 unique.
@@ -267,6 +282,40 @@ class TestParseRscBody(unittest.TestCase):
         ft._parse_rsc_body(_rsc_item('s1', id_='1'), seen, templates)
         ft._parse_rsc_body(_rsc_item('s2', id_='2'), seen, templates)
         self.assertEqual(len(templates), 2)
+
+    def test_parses_item_with_space_after_colon(self):
+        # RSC may emit "item": {"id":... (space between colon and brace)
+        body = _rsc_item('spaced-slug', id_='42').replace('"item":{', '"item": {')
+        _, templates = self._parse(body)
+        self.assertEqual(len(templates), 1)
+        self.assertEqual(templates[0]['slug'], 'spaced-slug')
+
+    def test_parses_item_with_newline_after_colon(self):
+        # RSC may emit "item":\n{"id":... (newline between colon and brace)
+        body = _rsc_item('newline-slug', id_='43').replace('"item":{', '"item":\n{')
+        _, templates = self._parse(body)
+        self.assertEqual(len(templates), 1)
+        self.assertEqual(templates[0]['slug'], 'newline-slug')
+
+    def test_skips_item_key_not_followed_by_object(self):
+        # "item": "string" — not a JSON object, should be skipped gracefully
+        body = '"item":"just a string"'
+        _, templates = self._parse(body)
+        self.assertEqual(len(templates), 0)
+
+    def test_skips_object_without_id_field(self):
+        # A JSON object after "item": that has no "id" key should be skipped
+        body = '"item":{"slug":"no-id","title":"T"}'
+        _, templates = self._parse(body)
+        self.assertEqual(len(templates), 0)
+
+    def test_continues_after_non_object_item(self):
+        # A non-object "item": followed by a valid template item must still parse the latter
+        item_str = _rsc_item('after-junk', id_='99')
+        body = '"item":"junk"\n' + item_str
+        _, templates = self._parse(body)
+        self.assertEqual(len(templates), 1)
+        self.assertEqual(templates[0]['slug'], 'after-junk')
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +376,9 @@ _BASE_TEMPLATE = {
     'price': 'Free',
     'published_at': '2024-01-15',
     'thumbnail': '',
+    'meta_title': '',
+    'demo_url': '',
+    'remixes': 0,
 }
 
 
@@ -409,6 +461,48 @@ class TestSaveToNotion(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError):
                 ft.save_to_notion(t)
 
+    def test_includes_meta_title_when_present(self):
+        t = {**_BASE_TEMPLATE, 'meta_title': 'Gym & Fitness Studio Website'}
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.save_to_notion(t)
+        props = mock_post.call_args[0][1]['properties']
+        self.assertIn('Meta Title', props)
+        self.assertEqual(props['Meta Title']['rich_text'][0]['text']['content'], 'Gym & Fitness Studio Website')
+
+    def test_excludes_meta_title_when_empty(self):
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.save_to_notion(_BASE_TEMPLATE)
+        props = mock_post.call_args[0][1]['properties']
+        self.assertNotIn('Meta Title', props)
+
+    def test_includes_demo_url_when_present(self):
+        t = {**_BASE_TEMPLATE, 'demo_url': 'https://mysite.framer.website/'}
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.save_to_notion(t)
+        props = mock_post.call_args[0][1]['properties']
+        self.assertIn('Demo URL', props)
+        self.assertEqual(props['Demo URL']['url'], 'https://mysite.framer.website/')
+
+    def test_excludes_demo_url_when_empty(self):
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.save_to_notion(_BASE_TEMPLATE)
+        props = mock_post.call_args[0][1]['properties']
+        self.assertNotIn('Demo URL', props)
+
+    def test_includes_remixes_when_nonzero(self):
+        t = {**_BASE_TEMPLATE, 'remixes': 12}
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.save_to_notion(t)
+        props = mock_post.call_args[0][1]['properties']
+        self.assertIn('Remixes', props)
+        self.assertEqual(props['Remixes']['number'], 12)
+
+    def test_excludes_remixes_when_zero(self):
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.save_to_notion(_BASE_TEMPLATE)
+        props = mock_post.call_args[0][1]['properties']
+        self.assertNotIn('Remixes', props)
+
 
 # ---------------------------------------------------------------------------
 # notify_discord
@@ -470,6 +564,45 @@ class TestNotifyDiscord(unittest.TestCase):
     def test_exception_is_caught_and_does_not_propagate(self):
         with patch('framer_templates.http_post', side_effect=Exception('network error')):
             ft.notify_discord(_DISCORD_TEMPLATE)  # must not raise
+
+    def test_description_includes_meta_title_when_present(self):
+        t = {**_DISCORD_TEMPLATE, 'meta_title': 'Gym & Fitness Website'}
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.notify_discord(t)
+        embed = mock_post.call_args[0][1]['embeds'][0]
+        self.assertIn('Gym & Fitness Website', embed['description'])
+
+    def test_description_excludes_meta_title_when_absent(self):
+        # _DISCORD_TEMPLATE has no meta_title key
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.notify_discord(_DISCORD_TEMPLATE)
+        embed = mock_post.call_args[0][1]['embeds'][0]
+        # description should only contain the author/price line
+        lines = embed['description'].splitlines()
+        self.assertEqual(len(lines), 1)
+
+    def test_description_includes_demo_url_when_present(self):
+        t = {**_DISCORD_TEMPLATE, 'demo_url': 'https://mysite.framer.website/'}
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.notify_discord(t)
+        embed = mock_post.call_args[0][1]['embeds'][0]
+        self.assertIn('[Live Demo](https://mysite.framer.website/)', embed['description'])
+
+    def test_description_excludes_demo_url_when_absent(self):
+        # _DISCORD_TEMPLATE has no demo_url key
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.notify_discord(_DISCORD_TEMPLATE)
+        embed = mock_post.call_args[0][1]['embeds'][0]
+        self.assertNotIn('Live Demo', embed['description'])
+
+    def test_description_includes_meta_title_and_demo_url_together(self):
+        t = {**_DISCORD_TEMPLATE, 'author_slug': '', 'price': 'Free',
+             'meta_title': 'Portfolio Template', 'demo_url': 'https://demo.framer.website/'}
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.notify_discord(t)
+        embed = mock_post.call_args[0][1]['embeds'][0]
+        self.assertIn('Portfolio Template', embed['description'])
+        self.assertIn('[Live Demo](https://demo.framer.website/)', embed['description'])
 
 
 # ---------------------------------------------------------------------------
