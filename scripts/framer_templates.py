@@ -9,6 +9,7 @@ import re
 import urllib.request
 import urllib.error
 from datetime import datetime
+import error_log
 
 
 def load_dotenv() -> None:
@@ -103,6 +104,11 @@ def fetch_from_rsc() -> list[dict]:
     print(f'Parsed {len(templates)} templates from RSC.')
     if len(templates) < 5:
         print(f'WARNING: only {len(templates)} templates parsed — RSC output may be incomplete.')
+        error_log.log_error(
+            'framer_templates', 'warning',
+            f'Only {len(templates)} templates parsed from RSC — format may have changed',
+            {'count': len(templates)},
+        )
     return templates
 
 
@@ -254,6 +260,11 @@ def notify_discord(template: dict) -> None:
         http_post(os.environ['DISCORD_WEBHOOK_URL_TEMPLATES'], {'embeds': [embed]})
     except Exception as e:
         print(f'Discord notification failed for "{template["title"]}": {e}')
+        error_log.log_error(
+            'framer_templates', 'warning',
+            f'Discord notification failed for "{template["title"]}"',
+            {'error': str(e)},
+        )
 
 
 def _warn_discord(message: str) -> None:
@@ -262,6 +273,7 @@ def _warn_discord(message: str) -> None:
         http_post(os.environ['DISCORD_ALERTS_WEBHOOK_URL'], {'content': message})
     except Exception as e:
         print(f'Failed to send Discord alert: {e}')
+        error_log.log_error('framer_templates', 'warning', 'Failed to send Discord alert', {'error': str(e)})
 
 
 def _write_summary(text: str) -> None:
@@ -317,6 +329,11 @@ def main() -> None:
             save_to_notion(template)
         except Exception as e:
             print(f'Failed to save "{template["title"]}" to Notion: {e}')
+            error_log.log_error(
+                'framer_templates', 'error',
+                f'Failed to save "{template["title"]}" to Notion',
+                {'slug': template['slug'], 'error': str(e)},
+            )
             continue
         if not is_first_run:
             notify_discord(template)

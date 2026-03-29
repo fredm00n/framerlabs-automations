@@ -4,12 +4,16 @@ Script execution (Tier 1) runs on GitHub Actions cron every 15 minutes — see `
 
 ## Step 1 — Review for improvements
 
-Review the code in `scripts/` and check recent GitHub Actions run logs for errors or warnings. Consider:
+Pull the latest changes (`git pull origin main`), then review the code in `scripts/` and
+check `logs/errors.jsonl` for recent errors or warnings. Consider:
 - Parsing robustness (does the source output format still look correct?)
 - New useful fields to track
 - Edge cases or error handling gaps
 - Any enhancements that fit the broader goal of the script
-- Failed or degraded GitHub Actions runs that indicate a parsing or API issue
+- Errors in `logs/errors.jsonl` that indicate a parsing or API issue
+
+After reviewing, remove entries older than 7 days from `logs/errors.jsonl` to keep the
+file manageable, then commit the trimmed file to the improvement branch.
 
 ## Step 2 — Check for existing open PRs
 

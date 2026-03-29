@@ -8,6 +8,8 @@ on:
 jobs:
   monitor:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -20,3 +22,9 @@ jobs:
           DISCORD_WEBHOOK_URL_TEMPLATES: ${{ secrets.DISCORD_WEBHOOK_URL_TEMPLATES }}
           DISCORD_ALERTS_WEBHOOK_URL: ${{ secrets.DISCORD_ALERTS_WEBHOOK_URL }}
         run: python3 scripts/framer_templates.py
+      - name: Commit error log
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add logs/errors.jsonl
+          git diff --cached --quiet || (git pull --rebase origin main && git commit -m "chore: update error log [skip ci]" && git push)
