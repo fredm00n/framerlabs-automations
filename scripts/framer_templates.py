@@ -267,7 +267,8 @@ def save_to_notion(template: dict) -> None:
 # Discord
 # ---------------------------------------------------------------------------
 
-def notify_discord(template: dict) -> None:
+def _build_embed(template: dict) -> dict:
+    """Build a Discord embed dict for a single template."""
     author = template.get('author', 'unknown')
     author_slug = template.get('author_slug', '')
     price = template.get('price', '?')
@@ -290,15 +291,42 @@ def notify_discord(template: dict) -> None:
     }
     if template.get('thumbnail'):
         embed['image'] = {'url': template['thumbnail']}
-    try:
-        http_post(os.environ['DISCORD_WEBHOOK_URL_TEMPLATES'], {'embeds': [embed]})
-    except Exception as e:
-        print(f'Discord notification failed for "{template["title"]}": {e}')
-        error_log.log_error(
-            'framer_templates', 'warning',
-            f'Discord notification failed for "{template["title"]}"',
-            {'error': str(e)},
-        )
+    return embed
+
+
+def notify_discord_batch(templates: list[dict]) -> None:
+    """Send a summary message with grouped embeds to Discord.
+
+    Includes a summary line (e.g. "3 new Framer templates published on the
+    marketplace:") and groups up to 10 embeds per webhook call (Discord's limit).
+    """
+    if not templates:
+        return
+    n = len(templates)
+    noun = 'template' if n == 1 else 'templates'
+    summary = f"{n} new Framer {noun} published on the marketplace:"
+    embeds = [_build_embed(t) for t in templates]
+    # Discord allows max 10 embeds per message
+    for i in range(0, len(embeds), 10):
+        chunk = embeds[i:i + 10]
+        payload: dict = {'embeds': chunk}
+        if i == 0:
+            payload['content'] = summary
+        try:
+            http_post(os.environ['DISCORD_WEBHOOK_URL_TEMPLATES'], payload)
+        except Exception as e:
+            titles = ', '.join(t['title'] for t in chunk)
+            print(f'Discord notification failed for batch [{titles}]: {e}')
+            error_log.log_error(
+                'framer_templates', 'warning',
+                f'Discord batch notification failed',
+                {'error': str(e), 'count': len(chunk)},
+            )
+
+
+def notify_discord(template: dict) -> None:
+    """Send a Discord notification for a single template (convenience wrapper)."""
+    notify_discord_batch([template])
 
 
 def _warn_discord(message: str) -> None:
@@ -358,9 +386,11 @@ def main() -> None:
     if is_first_run:
         print('First run — seeding DB without Discord notifications to avoid spam.')
 
+    saved_templates: list[dict] = []
     for template in new_templates:
         try:
             save_to_notion(template)
+            saved_templates.append(template)
         except Exception as e:
             print(f'Failed to save "{template["title"]}" to Notion: {e}')
             error_log.log_error(
@@ -369,10 +399,11 @@ def main() -> None:
                 {'slug': template['slug'], 'error': str(e)},
             )
             continue
-        if not is_first_run:
-            notify_discord(template)
-        action = 'Seeded' if is_first_run else 'Notified + saved'
+        action = 'Seeded' if is_first_run else 'Saved'
         print(f'{action}: {template["title"]}')
+
+    if not is_first_run and saved_templates:
+        notify_discord_batch(saved_templates)
 
     verb = 'Seeded' if is_first_run else 'Notified'
     print(f'Done. {verb} {len(new_templates)} template(s).')
