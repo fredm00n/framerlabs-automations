@@ -51,7 +51,7 @@ Log rotation: the self-improvement session removes entries older than 7 days aft
 them, then commits the trimmed file.
 
 ### Notifications
-- **Data notifications** (`DISCORD_WEBHOOK_URL_TEMPLATES`, `DISCORD_WEBHOOK_URL_LEADS`): new discoveries, one message per item, not batched. Each script has its own webhook/channel.
+- **Data notifications** (`DISCORD_WEBHOOK_URL_TEMPLATES`, `DISCORD_WEBHOOK_URL_LEADS`): new discoveries. Templates are batched into a single message with a summary line and up to 10 embeds per webhook call. Each script has its own webhook/channel.
 - **System alerts** (`DISCORD_ALERTS_WEBHOOK_URL`): system-level warnings and errors (e.g. RSC parse failure, unexpected API errors). Separate channel so operational issues don't get lost in data traffic. All scripts must use `DISCORD_ALERTS_WEBHOOK_URL` for system alerts, not the data webhooks.
 
 ---
@@ -99,11 +99,9 @@ Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort
 
 **Deferred improvements:**
 - Categories/tags — previously noted as present in the RSC payload, but an inspection of the live payload (2026-03-27) found no category/tag fields at the item level. The RSC format may have changed, or categories may be on a different endpoint. Not pursued until confirmed present.
-- Existing Notion records lack the `Thumbnail`, `Published`, `Meta Title`, `Demo URL`, and `Remixes` properties — only new records saved after their respective PRs include them. Backfill via Notion API is possible but skipped as low priority.
 - RSC format is an internal Next.js mechanism — Framer could change the response structure without notice. When parsing yields < 5 templates a Discord alert is sent to `DISCORD_ALERTS_WEBHOOK_URL`; inspect the raw RSC payload and update `_extract_json_object` / the `"item":{"id":` search key
 - HTTP retry logic — transient network errors cause the whole run to abort; could add simple exponential backoff. Not added to keep stdlib-only code simple; scheduler will retry on next scheduled run
 - Richer HTTP error reporting — printing the response body on Notion API errors (4xx/5xx) would aid debugging; skipped as the existing error messages are sufficient for now
-- Test isolation of `error_log.log_error` — implemented (2026-03-30) in `tests/test_framer_templates.py` and `tests/test_reddit_leads.py` via module-level `setUpModule`/`tearDownModule` patching, preventing test runs from writing spurious entries to `logs/errors.jsonl`
 
 ---
 
@@ -193,6 +191,7 @@ Read CLAUDE.md and SCHEDULER.md, then follow the instructions in SCHEDULER.md.
 - Branch naming: `claude/<description>-<random-suffix>`
 - Each logical improvement = one PR
 - The scheduler auto-creates PRs when it finds improvements; human reviews and merges
+- **Keep CLAUDE.md accurate**: when a PR changes behavior described in this file (e.g. notification format, architecture, script capabilities), update the relevant sections in the same PR. This file is for current instructions, not history — don't add changelog entries.
 
 ## Adding a new script
 
