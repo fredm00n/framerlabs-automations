@@ -23,6 +23,22 @@ from scripts.reddit_leads import (
 )
 
 # ---------------------------------------------------------------------------
+# Prevent test runs from writing to the real logs/errors.jsonl file.
+# Any test that exercises a code path which calls error_log.log_error would
+# otherwise create real entries in the shared log, polluting it with test noise.
+# ---------------------------------------------------------------------------
+_error_log_patcher = patch('error_log.log_error')
+
+
+def setUpModule():  # noqa: N802
+    _error_log_patcher.start()
+
+
+def tearDownModule():  # noqa: N802
+    _error_log_patcher.stop()
+
+
+# ---------------------------------------------------------------------------
 # Sample Atom RSS fixture
 # ---------------------------------------------------------------------------
 

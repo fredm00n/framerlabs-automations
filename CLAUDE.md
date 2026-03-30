@@ -103,6 +103,7 @@ Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort
 - RSC format is an internal Next.js mechanism — Framer could change the response structure without notice. When parsing yields < 5 templates a Discord alert is sent to `DISCORD_ALERTS_WEBHOOK_URL`; inspect the raw RSC payload and update `_extract_json_object` / the `"item":{"id":` search key
 - HTTP retry logic — transient network errors cause the whole run to abort; could add simple exponential backoff. Not added to keep stdlib-only code simple; scheduler will retry on next scheduled run
 - Richer HTTP error reporting — printing the response body on Notion API errors (4xx/5xx) would aid debugging; skipped as the existing error messages are sufficient for now
+- Test isolation of `error_log.log_error` — implemented (2026-03-30) in `tests/test_framer_templates.py` and `tests/test_reddit_leads.py` via module-level `setUpModule`/`tearDownModule` patching, preventing test runs from writing spurious entries to `logs/errors.jsonl`
 
 ---
 

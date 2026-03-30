@@ -229,9 +229,31 @@ def fetch_reddit_posts(subreddit: str, feed_url: str) -> list[dict] | None:
     """
     try:
         body = http_get(feed_url)
+    except urllib.error.HTTPError as e:
+        body_preview = ''
+        try:
+            body_preview = e.read().decode('utf-8', errors='replace')[:200]
+        except Exception:
+            pass
+        print(f'HTTP {e.code} fetching r/{subreddit}: {e}')
+        error_log.log_error(
+            'reddit_leads', 'warning',
+            f'Failed to fetch r/{subreddit}',
+            {
+                'feed_url': feed_url,
+                'status': e.code,
+                'body_preview': body_preview,
+                'error': str(e),
+            },
+        )
+        return None
     except Exception as e:
         print(f'Failed to fetch r/{subreddit}: {e}')
-        error_log.log_error('reddit_leads', 'warning', f'Failed to fetch r/{subreddit}', {'feed_url': feed_url, 'error': str(e)})
+        error_log.log_error(
+            'reddit_leads', 'warning',
+            f'Failed to fetch r/{subreddit}',
+            {'feed_url': feed_url, 'error': str(e)},
+        )
         return None
 
     posts = []
@@ -408,7 +430,7 @@ def notify_discord_lead(lead: dict) -> None:
 def _warn_discord(message: str) -> None:
     """Send a system-level warning to the dedicated alerts webhook."""
     try:
-        http_post(os.environ['DISCORD_ALERTS_WEBHOOK_URL'], {'content': message})
+        http_post(os.environ['DISCORD_ALERTS_WEBHOOK_URL'], {'content': f'[framerlabs-automations] {message}'})
     except Exception as e:
         print(f'Failed to send Discord alert: {e}')
         error_log.log_error('reddit_leads', 'warning', 'Failed to send Discord alert', {'error': str(e)})
