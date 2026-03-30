@@ -30,26 +30,54 @@ def load_dotenv() -> None:
 # HTTP helpers
 # ---------------------------------------------------------------------------
 
+def _should_retry(exc: Exception) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in (429, 500, 502, 503, 504)
+    if isinstance(exc, urllib.error.URLError):
+        return True  # network/connection errors
+    return False
+
+
+def _retry(fn, max_attempts: int = 4):
+    import time
+    delay = 2
+    last_exc = None
+    for attempt in range(max_attempts):
+        try:
+            return fn()
+        except Exception as exc:
+            last_exc = exc
+            if not _should_retry(exc) or attempt == max_attempts - 1:
+                raise
+            time.sleep(delay)
+            delay *= 2
+    raise last_exc  # unreachable but satisfies type checkers
+
+
 def http_get(url: str, headers: dict | None = None) -> str:
-    req = urllib.request.Request(
-        url,
-        headers={'User-Agent': 'automation-bot/1.0', **(headers or {})},
-    )
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return r.read().decode('utf-8')
+    def _do():
+        req = urllib.request.Request(
+            url,
+            headers={'User-Agent': 'automation-bot/1.0', **(headers or {})},
+        )
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.read().decode('utf-8')
+    return _retry(_do)
 
 
 def http_post(url: str, data: dict, headers: dict | None = None) -> dict:
     body = json.dumps(data).encode('utf-8')
-    req = urllib.request.Request(
-        url,
-        data=body,
-        headers={'Content-Type': 'application/json', 'User-Agent': 'automation-bot/1.0', **(headers or {})},
-        method='POST',
-    )
-    with urllib.request.urlopen(req, timeout=30) as r:
-        raw = r.read()
-        return json.loads(raw) if raw else {}
+    def _do():
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={'Content-Type': 'application/json', 'User-Agent': 'automation-bot/1.0', **(headers or {})},
+            method='POST',
+        )
+        with urllib.request.urlopen(req, timeout=30) as r:
+            raw = r.read()
+            return json.loads(raw) if raw else {}
+    return _retry(_do)
 
 
 def notion_headers() -> dict:
