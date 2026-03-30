@@ -862,5 +862,54 @@ class TestWriteSummary(unittest.TestCase):
         self.assertIn('already tracked', summary_text)
 
 
+class TestHttpRetry(unittest.TestCase):
+    """_retry backs off and re-raises on transient HTTP errors."""
+
+    def test_retries_on_502_then_succeeds(self):
+        call_count = [0]
+
+        def flaky():
+            call_count[0] += 1
+            if call_count[0] < 3:
+                raise urllib.error.HTTPError(None, 502, 'Bad Gateway', {}, None)
+            return 'ok'
+
+        with patch('time.sleep'):
+            result = ft._retry(flaky)
+        self.assertEqual(result, 'ok')
+        self.assertEqual(call_count[0], 3)
+
+    def test_raises_after_max_attempts(self):
+        err = urllib.error.HTTPError(None, 502, 'Bad Gateway', {}, None)
+        with patch('time.sleep'), \
+             self.assertRaises(urllib.error.HTTPError):
+            ft._retry(lambda: (_ for _ in ()).throw(err))
+
+    def test_does_not_retry_on_404(self):
+        call_count = [0]
+
+        def fn():
+            call_count[0] += 1
+            raise urllib.error.HTTPError(None, 404, 'Not Found', {}, None)
+
+        with self.assertRaises(urllib.error.HTTPError):
+            ft._retry(fn)
+        self.assertEqual(call_count[0], 1)
+
+    def test_retries_on_url_error(self):
+        call_count = [0]
+
+        def flaky():
+            call_count[0] += 1
+            if call_count[0] < 2:
+                raise urllib.error.URLError('connection refused')
+            return 'ok'
+
+        with patch('time.sleep'):
+            result = ft._retry(flaky)
+        self.assertEqual(result, 'ok')
+        self.assertEqual(call_count[0], 2)
+
+
 if __name__ == '__main__':
     unittest.main()
