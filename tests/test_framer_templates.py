@@ -14,6 +14,21 @@ from unittest.mock import MagicMock, mock_open, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 import framer_templates as ft
 
+# ---------------------------------------------------------------------------
+# Prevent test runs from writing to the real logs/errors.jsonl file.
+# Any test that exercises a code path which calls error_log.log_error would
+# otherwise create real entries in the shared log, polluting it with test noise.
+# ---------------------------------------------------------------------------
+_error_log_patcher = patch('error_log.log_error')
+
+
+def setUpModule():  # noqa: N802
+    _error_log_patcher.start()
+
+
+def tearDownModule():  # noqa: N802
+    _error_log_patcher.stop()
+
 
 # ---------------------------------------------------------------------------
 # _extract_json_object
