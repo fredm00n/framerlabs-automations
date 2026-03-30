@@ -20,6 +20,7 @@ def log_error(
     message: str,
     context: dict | None = None,
     log_path: str = "logs/errors.jsonl",
+    repo: str = "framerlabs-automations",
 ) -> None:
     """Append one structured error entry to the log file.
 
@@ -30,12 +31,15 @@ def log_error(
         context:  Optional dict with extra debug info (URLs, counts, etc.).
         log_path: Path to the JSONL file (relative to CWD). Defaults to
                   logs/errors.jsonl.
+        repo:     Repository name for the log entry. Defaults to
+                  "framerlabs-automations".
     """
     try:
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "script": script,
             "severity": severity,
+            "repo": repo,
             "message": message,
             "context": context or {},
         }

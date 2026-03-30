@@ -304,7 +304,7 @@ def notify_discord(template: dict) -> None:
 def _warn_discord(message: str) -> None:
     """Send a system-level warning to the dedicated alerts webhook."""
     try:
-        http_post(os.environ['DISCORD_ALERTS_WEBHOOK_URL'], {'content': message})
+        http_post(os.environ['DISCORD_ALERTS_WEBHOOK_URL'], {'content': f'[framerlabs-automations] {message}'})
     except Exception as e:
         print(f'Failed to send Discord alert: {e}')
         error_log.log_error('framer_templates', 'warning', 'Failed to send Discord alert', {'error': str(e)})

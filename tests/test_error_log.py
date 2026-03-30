@@ -83,6 +83,16 @@ class TestLogError(unittest.TestCase):
             entry = json.loads(f.read().strip())
         self.assertEqual(entry['message'], 'msg')
 
+    def test_default_repo_field(self):
+        error_log.log_error('s', 'error', 'msg', log_path=self.log_path)
+        entry = self._read_entries()[0]
+        self.assertEqual(entry['repo'], 'framerlabs-automations')
+
+    def test_custom_repo_field(self):
+        error_log.log_error('s', 'error', 'msg', repo='other-repo', log_path=self.log_path)
+        entry = self._read_entries()[0]
+        self.assertEqual(entry['repo'], 'other-repo')
+
 
 if __name__ == '__main__':
     unittest.main()
