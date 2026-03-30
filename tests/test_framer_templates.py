@@ -520,7 +520,7 @@ class TestSaveToNotion(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# notify_discord
+# _build_embed
 # ---------------------------------------------------------------------------
 
 _DISCORD_TEMPLATE = {
@@ -533,91 +533,120 @@ _DISCORD_TEMPLATE = {
 }
 
 
-class TestNotifyDiscord(unittest.TestCase):
+class TestBuildEmbed(unittest.TestCase):
 
-    def setUp(self):
-        os.environ['DISCORD_WEBHOOK_URL_TEMPLATES'] = 'https://discord.com/api/webhooks/test'
-
-    def test_posts_embed_to_webhook(self):
-        with patch('framer_templates.http_post', return_value={}) as mock_post:
-            ft.notify_discord(_DISCORD_TEMPLATE)
-        mock_post.assert_called_once()
-        payload = mock_post.call_args[0][1]
-        self.assertIn('embeds', payload)
-        embed = payload['embeds'][0]
+    def test_basic_embed_structure(self):
+        embed = ft._build_embed(_DISCORD_TEMPLATE)
         self.assertEqual(embed['title'], 'Test Template')
+        self.assertEqual(embed['url'], 'https://www.framer.com/marketplace/templates/test/')
         self.assertEqual(embed['color'], 0x5865F2)
 
     def test_description_includes_author_link(self):
-        with patch('framer_templates.http_post', return_value={}) as mock_post:
-            ft.notify_discord(_DISCORD_TEMPLATE)
-        embed = mock_post.call_args[0][1]['embeds'][0]
+        embed = ft._build_embed(_DISCORD_TEMPLATE)
         self.assertIn('[Bob](https://www.framer.com/marketplace/profiles/bob-studio/)', embed['description'])
         self.assertIn('**$10**', embed['description'])
 
     def test_description_plain_author_when_no_slug(self):
         t = {**_DISCORD_TEMPLATE, 'author_slug': ''}
-        with patch('framer_templates.http_post', return_value={}) as mock_post:
-            ft.notify_discord(t)
-        embed = mock_post.call_args[0][1]['embeds'][0]
+        embed = ft._build_embed(t)
         self.assertEqual(embed['description'], 'by Bob · **$10**')
 
     def test_includes_image_when_thumbnail_present(self):
         t = {**_DISCORD_TEMPLATE, 'thumbnail': 'https://cdn.example.com/img.jpg'}
-        with patch('framer_templates.http_post', return_value={}) as mock_post:
-            ft.notify_discord(t)
-        embed = mock_post.call_args[0][1]['embeds'][0]
+        embed = ft._build_embed(t)
         self.assertIn('image', embed)
         self.assertEqual(embed['image']['url'], 'https://cdn.example.com/img.jpg')
 
     def test_no_image_key_when_thumbnail_absent(self):
-        with patch('framer_templates.http_post', return_value={}) as mock_post:
-            ft.notify_discord(_DISCORD_TEMPLATE)
-        embed = mock_post.call_args[0][1]['embeds'][0]
+        embed = ft._build_embed(_DISCORD_TEMPLATE)
         self.assertNotIn('image', embed)
-
-    def test_exception_is_caught_and_does_not_propagate(self):
-        with patch('framer_templates.http_post', side_effect=Exception('network error')):
-            ft.notify_discord(_DISCORD_TEMPLATE)  # must not raise
 
     def test_description_includes_meta_title_when_present(self):
         t = {**_DISCORD_TEMPLATE, 'meta_title': 'Gym & Fitness Website'}
-        with patch('framer_templates.http_post', return_value={}) as mock_post:
-            ft.notify_discord(t)
-        embed = mock_post.call_args[0][1]['embeds'][0]
+        embed = ft._build_embed(t)
         self.assertIn('Gym & Fitness Website', embed['description'])
 
     def test_description_excludes_meta_title_when_absent(self):
-        # _DISCORD_TEMPLATE has no meta_title key
-        with patch('framer_templates.http_post', return_value={}) as mock_post:
-            ft.notify_discord(_DISCORD_TEMPLATE)
-        embed = mock_post.call_args[0][1]['embeds'][0]
-        # description should only contain the author/price line
+        embed = ft._build_embed(_DISCORD_TEMPLATE)
         lines = embed['description'].splitlines()
         self.assertEqual(len(lines), 1)
 
     def test_description_includes_demo_url_when_present(self):
         t = {**_DISCORD_TEMPLATE, 'demo_url': 'https://mysite.framer.website/'}
-        with patch('framer_templates.http_post', return_value={}) as mock_post:
-            ft.notify_discord(t)
-        embed = mock_post.call_args[0][1]['embeds'][0]
+        embed = ft._build_embed(t)
         self.assertIn('[Live Demo](https://mysite.framer.website/)', embed['description'])
 
     def test_description_excludes_demo_url_when_absent(self):
-        # _DISCORD_TEMPLATE has no demo_url key
-        with patch('framer_templates.http_post', return_value={}) as mock_post:
-            ft.notify_discord(_DISCORD_TEMPLATE)
-        embed = mock_post.call_args[0][1]['embeds'][0]
+        embed = ft._build_embed(_DISCORD_TEMPLATE)
         self.assertNotIn('Live Demo', embed['description'])
 
     def test_description_includes_meta_title_and_demo_url_together(self):
         t = {**_DISCORD_TEMPLATE, 'author_slug': '', 'price': 'Free',
              'meta_title': 'Portfolio Template', 'demo_url': 'https://demo.framer.website/'}
-        with patch('framer_templates.http_post', return_value={}) as mock_post:
-            ft.notify_discord(t)
-        embed = mock_post.call_args[0][1]['embeds'][0]
+        embed = ft._build_embed(t)
         self.assertIn('Portfolio Template', embed['description'])
         self.assertIn('[Live Demo](https://demo.framer.website/)', embed['description'])
+
+
+# ---------------------------------------------------------------------------
+# notify_discord_batch
+# ---------------------------------------------------------------------------
+
+class TestNotifyDiscordBatch(unittest.TestCase):
+
+    def setUp(self):
+        os.environ['DISCORD_WEBHOOK_URL_TEMPLATES'] = 'https://discord.com/api/webhooks/test'
+
+    def test_single_template_summary_singular(self):
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.notify_discord_batch([_DISCORD_TEMPLATE])
+        mock_post.assert_called_once()
+        payload = mock_post.call_args[0][1]
+        self.assertEqual(payload['content'], '1 new Framer template published on the marketplace:')
+        self.assertEqual(len(payload['embeds']), 1)
+
+    def test_multiple_templates_summary_plural(self):
+        templates = [{**_DISCORD_TEMPLATE, 'slug': f'slug-{i}', 'title': f'T{i}'} for i in range(3)]
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.notify_discord_batch(templates)
+        mock_post.assert_called_once()
+        payload = mock_post.call_args[0][1]
+        self.assertEqual(payload['content'], '3 new Framer templates published on the marketplace:')
+        self.assertEqual(len(payload['embeds']), 3)
+
+    def test_more_than_ten_templates_chunks_into_multiple_calls(self):
+        templates = [{**_DISCORD_TEMPLATE, 'slug': f'slug-{i}', 'title': f'T{i}'} for i in range(12)]
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.notify_discord_batch(templates)
+        self.assertEqual(mock_post.call_count, 2)
+        # First call has summary + 10 embeds
+        first_payload = mock_post.call_args_list[0][0][1]
+        self.assertIn('content', first_payload)
+        self.assertEqual(first_payload['content'], '12 new Framer templates published on the marketplace:')
+        self.assertEqual(len(first_payload['embeds']), 10)
+        # Second call has remaining 2 embeds, no summary
+        second_payload = mock_post.call_args_list[1][0][1]
+        self.assertNotIn('content', second_payload)
+        self.assertEqual(len(second_payload['embeds']), 2)
+
+    def test_empty_list_does_nothing(self):
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.notify_discord_batch([])
+        mock_post.assert_not_called()
+
+    def test_error_in_one_chunk_does_not_stop_remaining(self):
+        templates = [{**_DISCORD_TEMPLATE, 'slug': f'slug-{i}', 'title': f'T{i}'} for i in range(15)]
+        with patch('framer_templates.http_post', side_effect=[Exception('fail'), {}]) as mock_post:
+            ft.notify_discord_batch(templates)  # must not raise
+        self.assertEqual(mock_post.call_count, 2)
+
+    def test_notify_discord_wrapper_calls_batch(self):
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.notify_discord(_DISCORD_TEMPLATE)
+        mock_post.assert_called_once()
+        payload = mock_post.call_args[0][1]
+        self.assertIn('content', payload)
+        self.assertEqual(len(payload['embeds']), 1)
 
 
 # ---------------------------------------------------------------------------
@@ -652,7 +681,7 @@ class TestMain(unittest.TestCase):
         with patch('framer_templates.fetch_framer_templates', return_value=templates), \
              patch('framer_templates.get_seen_slugs', return_value=seen_slugs), \
              patch('framer_templates.save_to_notion', save_mock), \
-             patch('framer_templates.notify_discord', notify_mock), \
+             patch('framer_templates.notify_discord_batch', notify_mock), \
              patch('framer_templates._warn_discord'), \
              patch('builtins.open', side_effect=FileNotFoundError):
             ft.main()
@@ -689,7 +718,7 @@ class TestMain(unittest.TestCase):
         with patch('framer_templates.fetch_framer_templates', return_value=_TEMPLATES), \
              patch('framer_templates.get_seen_slugs', return_value=set()), \
              patch('framer_templates.save_to_notion', save_mock), \
-             patch('framer_templates.notify_discord', notify_mock), \
+             patch('framer_templates.notify_discord_batch', notify_mock), \
              patch('framer_templates._warn_discord'), \
              patch('builtins.open', side_effect=FileNotFoundError):
             ft.main()  # must not raise
@@ -700,7 +729,7 @@ class TestMain(unittest.TestCase):
         with patch('framer_templates.fetch_framer_templates', return_value=few), \
              patch('framer_templates.get_seen_slugs', return_value=set()), \
              patch('framer_templates.save_to_notion'), \
-             patch('framer_templates.notify_discord'), \
+             patch('framer_templates.notify_discord_batch'), \
              patch('framer_templates._warn_discord') as warn_mock, \
              patch('builtins.open', side_effect=FileNotFoundError):
             ft.main()
@@ -716,7 +745,7 @@ class TestMain(unittest.TestCase):
         with patch('framer_templates.fetch_framer_templates', return_value=five), \
              patch('framer_templates.get_seen_slugs', return_value=set()), \
              patch('framer_templates.save_to_notion'), \
-             patch('framer_templates.notify_discord'), \
+             patch('framer_templates.notify_discord_batch'), \
              patch('framer_templates._warn_discord') as warn_mock, \
              patch('builtins.open', side_effect=FileNotFoundError):
             ft.main()
@@ -805,7 +834,7 @@ class TestWriteSummary(unittest.TestCase):
              patch('framer_templates.get_seen_slugs', return_value=set()), \
              patch('framer_templates._warn_discord'), \
              patch('framer_templates.save_to_notion'), \
-             patch('framer_templates.notify_discord'), \
+             patch('framer_templates.notify_discord_batch'), \
              patch('framer_templates._write_summary') as mock_summary, \
              patch('builtins.open', side_effect=FileNotFoundError):
             ft.main()
@@ -823,7 +852,7 @@ class TestWriteSummary(unittest.TestCase):
              patch('framer_templates.get_seen_slugs', return_value={'old'}), \
              patch('framer_templates._warn_discord'), \
              patch('framer_templates.save_to_notion'), \
-             patch('framer_templates.notify_discord'), \
+             patch('framer_templates.notify_discord_batch'), \
              patch('framer_templates._write_summary') as mock_summary, \
              patch('builtins.open', side_effect=FileNotFoundError):
             ft.main()
