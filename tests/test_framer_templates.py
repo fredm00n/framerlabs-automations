@@ -600,53 +600,64 @@ class TestNotifyDiscordBatch(unittest.TestCase):
     def test_single_template_summary_singular(self):
         with patch('framer_templates.http_post', return_value={}) as mock_post:
             ft.notify_discord_batch([_DISCORD_TEMPLATE])
-        mock_post.assert_called_once()
-        payload = mock_post.call_args[0][1]
-        self.assertEqual(payload['content'], '1 new Framer template published on the marketplace:')
-        self.assertEqual(len(payload['embeds']), 1)
+        # 1 summary + 1 embed = 2 calls
+        self.assertEqual(mock_post.call_count, 2)
+        summary_payload = mock_post.call_args_list[0][0][1]
+        self.assertEqual(summary_payload['content'], '1 new Framer template published on the marketplace:')
+        self.assertNotIn('embeds', summary_payload)
+        embed_payload = mock_post.call_args_list[1][0][1]
+        self.assertEqual(len(embed_payload['embeds']), 1)
 
     def test_multiple_templates_summary_plural(self):
         templates = [{**_DISCORD_TEMPLATE, 'slug': f'slug-{i}', 'title': f'T{i}'} for i in range(3)]
         with patch('framer_templates.http_post', return_value={}) as mock_post:
             ft.notify_discord_batch(templates)
-        mock_post.assert_called_once()
-        payload = mock_post.call_args[0][1]
-        self.assertEqual(payload['content'], '3 new Framer templates published on the marketplace:')
-        self.assertEqual(len(payload['embeds']), 3)
+        # 1 summary + 3 embeds = 4 calls
+        self.assertEqual(mock_post.call_count, 4)
+        summary_payload = mock_post.call_args_list[0][0][1]
+        self.assertEqual(summary_payload['content'], '3 new Framer templates published on the marketplace:')
+        self.assertNotIn('embeds', summary_payload)
+        for i in range(1, 4):
+            self.assertEqual(len(mock_post.call_args_list[i][0][1]['embeds']), 1)
 
-    def test_more_than_ten_templates_chunks_into_multiple_calls(self):
+    def test_many_templates_sends_one_embed_per_message(self):
         templates = [{**_DISCORD_TEMPLATE, 'slug': f'slug-{i}', 'title': f'T{i}'} for i in range(12)]
         with patch('framer_templates.http_post', return_value={}) as mock_post:
             ft.notify_discord_batch(templates)
-        self.assertEqual(mock_post.call_count, 2)
-        # First call has summary + 10 embeds
-        first_payload = mock_post.call_args_list[0][0][1]
-        self.assertIn('content', first_payload)
-        self.assertEqual(first_payload['content'], '12 new Framer templates published on the marketplace:')
-        self.assertEqual(len(first_payload['embeds']), 10)
-        # Second call has remaining 2 embeds, no summary
-        second_payload = mock_post.call_args_list[1][0][1]
-        self.assertNotIn('content', second_payload)
-        self.assertEqual(len(second_payload['embeds']), 2)
+        # 1 summary + 12 individual embeds = 13 calls
+        self.assertEqual(mock_post.call_count, 13)
+        # First call is text-only summary
+        summary_payload = mock_post.call_args_list[0][0][1]
+        self.assertIn('content', summary_payload)
+        self.assertEqual(summary_payload['content'], '12 new Framer templates published on the marketplace:')
+        self.assertNotIn('embeds', summary_payload)
+        # Each subsequent call has exactly 1 embed
+        for i in range(1, 13):
+            payload = mock_post.call_args_list[i][0][1]
+            self.assertNotIn('content', payload)
+            self.assertEqual(len(payload['embeds']), 1)
 
     def test_empty_list_does_nothing(self):
         with patch('framer_templates.http_post', return_value={}) as mock_post:
             ft.notify_discord_batch([])
         mock_post.assert_not_called()
 
-    def test_error_in_one_chunk_does_not_stop_remaining(self):
-        templates = [{**_DISCORD_TEMPLATE, 'slug': f'slug-{i}', 'title': f'T{i}'} for i in range(15)]
-        with patch('framer_templates.http_post', side_effect=[Exception('fail'), {}]) as mock_post:
+    def test_error_in_one_message_does_not_stop_remaining(self):
+        templates = [{**_DISCORD_TEMPLATE, 'slug': f'slug-{i}', 'title': f'T{i}'} for i in range(3)]
+        # 4 calls total: summary + 3 embeds; first fails
+        effects = [Exception('fail')] + [{}] * 3
+        with patch('framer_templates.http_post', side_effect=effects) as mock_post:
             ft.notify_discord_batch(templates)  # must not raise
-        self.assertEqual(mock_post.call_count, 2)
+        self.assertEqual(mock_post.call_count, 4)
 
     def test_notify_discord_wrapper_calls_batch(self):
         with patch('framer_templates.http_post', return_value={}) as mock_post:
             ft.notify_discord(_DISCORD_TEMPLATE)
-        mock_post.assert_called_once()
-        payload = mock_post.call_args[0][1]
-        self.assertIn('content', payload)
-        self.assertEqual(len(payload['embeds']), 1)
+        # 1 summary + 1 embed = 2 calls
+        self.assertEqual(mock_post.call_count, 2)
+        summary_payload = mock_post.call_args_list[0][0][1]
+        self.assertIn('content', summary_payload)
+        self.assertNotIn('embeds', summary_payload)
 
 
 # ---------------------------------------------------------------------------
