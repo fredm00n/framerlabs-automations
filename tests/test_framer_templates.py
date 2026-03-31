@@ -785,6 +785,13 @@ class TestWarnDiscord(unittest.TestCase):
         with patch('framer_templates.http_post', side_effect=Exception('network error')):
             ft._warn_discord('msg')  # must not raise
 
+    def test_no_op_when_env_var_missing(self):
+        """_warn_discord must not raise when DISCORD_ALERTS_WEBHOOK_URL is unset."""
+        os.environ.pop('DISCORD_ALERTS_WEBHOOK_URL', None)
+        with patch('framer_templates.http_post') as mock_post:
+            ft._warn_discord('msg')  # must not raise
+        mock_post.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # _write_summary
