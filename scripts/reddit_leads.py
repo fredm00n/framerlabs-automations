@@ -154,16 +154,42 @@ def load_dotenv() -> None:
         pass
 
 
+def _should_retry(exc: Exception) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in (429, 500, 502, 503, 504)
+    if isinstance(exc, urllib.error.URLError):
+        return True  # network/connection errors
+    return False
+
+
+def _retry(fn, max_attempts: int = 4):
+    import time
+    delay = 2
+    last_exc = None
+    for attempt in range(max_attempts):
+        try:
+            return fn()
+        except Exception as exc:
+            last_exc = exc
+            if not _should_retry(exc) or attempt == max_attempts - 1:
+                raise
+            time.sleep(delay)
+            delay *= 2
+    raise last_exc  # unreachable but satisfies type checkers
+
+
 def http_get(url: str, headers: dict | None = None) -> str:
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
-    req = urllib.request.Request(
-        url,
-        headers={'User-Agent': 'automation-bot/1.0', **(headers or {})},
-    )
-    with urllib.request.urlopen(req, context=ctx, timeout=30) as r:
-        return r.read().decode('utf-8')
+    def _do():
+        req = urllib.request.Request(
+            url,
+            headers={'User-Agent': 'automation-bot/1.0', **(headers or {})},
+        )
+        with urllib.request.urlopen(req, context=ctx, timeout=30) as r:
+            return r.read().decode('utf-8')
+    return _retry(_do)
 
 
 def http_post(url: str, data: dict, headers: dict | None = None) -> dict:
@@ -171,15 +197,17 @@ def http_post(url: str, data: dict, headers: dict | None = None) -> dict:
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     body = json.dumps(data).encode('utf-8')
-    req = urllib.request.Request(
-        url,
-        data=body,
-        headers={'Content-Type': 'application/json', 'User-Agent': 'automation-bot/1.0', **(headers or {})},
-        method='POST',
-    )
-    with urllib.request.urlopen(req, context=ctx, timeout=30) as r:
-        raw = r.read()
-        return json.loads(raw) if raw else {}
+    def _do():
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={'Content-Type': 'application/json', 'User-Agent': 'automation-bot/1.0', **(headers or {})},
+            method='POST',
+        )
+        with urllib.request.urlopen(req, context=ctx, timeout=30) as r:
+            raw = r.read()
+            return json.loads(raw) if raw else {}
+    return _retry(_do)
 
 
 def http_patch(url: str, data: dict, headers: dict | None = None) -> dict:
@@ -187,15 +215,17 @@ def http_patch(url: str, data: dict, headers: dict | None = None) -> dict:
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     body = json.dumps(data).encode('utf-8')
-    req = urllib.request.Request(
-        url,
-        data=body,
-        headers={'Content-Type': 'application/json', 'User-Agent': 'automation-bot/1.0', **(headers or {})},
-        method='PATCH',
-    )
-    with urllib.request.urlopen(req, context=ctx, timeout=30) as r:
-        raw = r.read()
-        return json.loads(raw) if raw else {}
+    def _do():
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={'Content-Type': 'application/json', 'User-Agent': 'automation-bot/1.0', **(headers or {})},
+            method='PATCH',
+        )
+        with urllib.request.urlopen(req, context=ctx, timeout=30) as r:
+            raw = r.read()
+            return json.loads(raw) if raw else {}
+    return _retry(_do)
 
 
 def notion_headers() -> dict:
@@ -429,8 +459,12 @@ def notify_discord_lead(lead: dict) -> None:
 
 def _warn_discord(message: str) -> None:
     """Send a system-level warning to the dedicated alerts webhook."""
+    webhook_url = os.environ.get('DISCORD_ALERTS_WEBHOOK_URL')
+    if not webhook_url:
+        print('DISCORD_ALERTS_WEBHOOK_URL not set — skipping alert.')
+        return
     try:
-        http_post(os.environ['DISCORD_ALERTS_WEBHOOK_URL'], {'content': f'[framerlabs-automations] {message}'})
+        http_post(webhook_url, {'content': f'[framerlabs-automations] {message}'})
     except Exception as e:
         print(f'Failed to send Discord alert: {e}')
         error_log.log_error('reddit_leads', 'warning', 'Failed to send Discord alert', {'error': str(e)})

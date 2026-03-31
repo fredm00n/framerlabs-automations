@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import unittest
+import urllib.error
 from datetime import datetime
 from unittest.mock import MagicMock, call, patch
 
@@ -11,6 +12,8 @@ sys.path.insert(0, '.')
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts'))
 from scripts.reddit_leads import (
     _clean_html,
+    _retry,
+    _should_retry,
     fetch_reddit_posts,
     get_lead_by_id,
     get_pending_leads,
@@ -36,6 +39,95 @@ def setUpModule():  # noqa: N802
 
 def tearDownModule():  # noqa: N802
     _error_log_patcher.stop()
+
+
+# ---------------------------------------------------------------------------
+# TestShouldRetry
+# ---------------------------------------------------------------------------
+
+class TestShouldRetry(unittest.TestCase):
+
+    def test_retries_on_429(self):
+        exc = urllib.error.HTTPError(None, 429, 'Too Many Requests', {}, None)
+        self.assertTrue(_should_retry(exc))
+
+    def test_retries_on_500(self):
+        exc = urllib.error.HTTPError(None, 500, 'Server Error', {}, None)
+        self.assertTrue(_should_retry(exc))
+
+    def test_retries_on_502(self):
+        exc = urllib.error.HTTPError(None, 502, 'Bad Gateway', {}, None)
+        self.assertTrue(_should_retry(exc))
+
+    def test_retries_on_503(self):
+        exc = urllib.error.HTTPError(None, 503, 'Service Unavailable', {}, None)
+        self.assertTrue(_should_retry(exc))
+
+    def test_retries_on_504(self):
+        exc = urllib.error.HTTPError(None, 504, 'Gateway Timeout', {}, None)
+        self.assertTrue(_should_retry(exc))
+
+    def test_does_not_retry_on_400(self):
+        exc = urllib.error.HTTPError(None, 400, 'Bad Request', {}, None)
+        self.assertFalse(_should_retry(exc))
+
+    def test_does_not_retry_on_404(self):
+        exc = urllib.error.HTTPError(None, 404, 'Not Found', {}, None)
+        self.assertFalse(_should_retry(exc))
+
+    def test_retries_on_url_error(self):
+        import urllib.error as ue
+        exc = ue.URLError('network unreachable')
+        self.assertTrue(_should_retry(exc))
+
+    def test_does_not_retry_on_generic_exception(self):
+        self.assertFalse(_should_retry(ValueError('bad value')))
+
+
+# ---------------------------------------------------------------------------
+# TestRetry
+# ---------------------------------------------------------------------------
+
+class TestRetry(unittest.TestCase):
+
+    def test_returns_value_on_first_success(self):
+        fn = MagicMock(return_value='ok')
+        with patch('time.sleep'):
+            result = _retry(fn, max_attempts=3)
+        self.assertEqual(result, 'ok')
+        fn.assert_called_once()
+
+    def test_retries_on_retryable_error_then_succeeds(self):
+        exc = urllib.error.URLError('transient')
+        fn = MagicMock(side_effect=[exc, exc, 'success'])
+        with patch('time.sleep'):
+            result = _retry(fn, max_attempts=4)
+        self.assertEqual(result, 'success')
+        self.assertEqual(fn.call_count, 3)
+
+    def test_raises_after_max_attempts(self):
+        exc = urllib.error.URLError('persistent failure')
+        fn = MagicMock(side_effect=exc)
+        with patch('time.sleep'):
+            with self.assertRaises(urllib.error.URLError):
+                _retry(fn, max_attempts=3)
+        self.assertEqual(fn.call_count, 3)
+
+    def test_does_not_retry_non_retryable_error(self):
+        exc = urllib.error.HTTPError(None, 400, 'Bad Request', {}, None)
+        fn = MagicMock(side_effect=exc)
+        with patch('time.sleep'):
+            with self.assertRaises(urllib.error.HTTPError):
+                _retry(fn, max_attempts=4)
+        fn.assert_called_once()
+
+    def test_exponential_backoff_delays(self):
+        exc = urllib.error.URLError('fail')
+        fn = MagicMock(side_effect=[exc, exc, 'ok'])
+        with patch('time.sleep') as mock_sleep:
+            _retry(fn, max_attempts=4)
+        delays = [c[0][0] for c in mock_sleep.call_args_list]
+        self.assertEqual(delays, [2, 4])
 
 
 # ---------------------------------------------------------------------------
@@ -729,6 +821,39 @@ class TestWriteSummary(unittest.TestCase):
         summary_text = mock_summary.call_args[0][0]
         self.assertIn(f'{len(REDDIT_FEEDS)}/{len(REDDIT_FEEDS)}', summary_text)
         self.assertIn('unreachable', summary_text)
+
+
+# ---------------------------------------------------------------------------
+# TestWarnDiscord
+# ---------------------------------------------------------------------------
+
+class TestWarnDiscord(unittest.TestCase):
+
+    def setUp(self):
+        os.environ['DISCORD_ALERTS_WEBHOOK_URL'] = 'https://discord.com/api/webhooks/test-alerts'
+
+    def tearDown(self):
+        os.environ.pop('DISCORD_ALERTS_WEBHOOK_URL', None)
+
+    def test_posts_content_message_to_alerts_webhook(self):
+        with patch('scripts.reddit_leads.http_post', return_value={}) as mock_post:
+            rl._warn_discord('test warning message')
+        mock_post.assert_called_once()
+        url, payload = mock_post.call_args[0]
+        self.assertIn('test-alerts', url)
+        self.assertIn('content', payload)
+        self.assertIn('test warning message', payload['content'])
+
+    def test_exception_is_caught_and_does_not_propagate(self):
+        with patch('scripts.reddit_leads.http_post', side_effect=Exception('network error')):
+            rl._warn_discord('msg')  # must not raise
+
+    def test_no_op_when_env_var_missing(self):
+        """_warn_discord must not raise when DISCORD_ALERTS_WEBHOOK_URL is unset."""
+        os.environ.pop('DISCORD_ALERTS_WEBHOOK_URL', None)
+        with patch('scripts.reddit_leads.http_post') as mock_post:
+            rl._warn_discord('msg')  # must not raise
+        mock_post.assert_not_called()
 
 
 if __name__ == '__main__':
