@@ -51,7 +51,7 @@ Log rotation: the self-improvement session removes entries older than 7 days aft
 them, then commits the trimmed file.
 
 ### Notifications
-- **Data notifications** (`DISCORD_WEBHOOK_URL_TEMPLATES`, `DISCORD_WEBHOOK_URL_LEADS`): new discoveries. Templates are batched into a single message with a summary line and up to 10 embeds per webhook call. Each script has its own webhook/channel.
+- **Data notifications** (`DISCORD_WEBHOOK_URL_TEMPLATES`, `DISCORD_WEBHOOK_URL_LEADS`): new discoveries. Templates send a standalone summary message followed by one embed per template. Each script has its own webhook/channel.
 - **System alerts** (`DISCORD_ALERTS_WEBHOOK_URL`): system-level warnings and errors (e.g. RSC parse failure, unexpected API errors). Separate channel so operational issues don't get lost in data traffic. All scripts must use `DISCORD_ALERTS_WEBHOOK_URL` for system alerts, not the data webhooks.
 
 ---

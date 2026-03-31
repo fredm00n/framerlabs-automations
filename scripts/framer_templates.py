@@ -323,10 +323,11 @@ def _build_embed(template: dict) -> dict:
 
 
 def notify_discord_batch(templates: list[dict]) -> None:
-    """Send a summary message with grouped embeds to Discord.
+    """Send a standalone summary then one Discord message per template.
 
-    Includes a summary line (e.g. "3 new Framer templates published on the
-    marketplace:") and groups up to 10 embeds per webhook call (Discord's limit).
+    First message is a text-only summary (e.g. "3 new Framer templates
+    published on the marketplace:"), followed by one message per template
+    each containing a single embed.
     """
     if not templates:
         return
@@ -334,21 +335,22 @@ def notify_discord_batch(templates: list[dict]) -> None:
     noun = 'template' if n == 1 else 'templates'
     summary = f"{n} new Framer {noun} published on the marketplace:"
     embeds = [_build_embed(t) for t in templates]
-    # Discord allows max 10 embeds per message
-    for i in range(0, len(embeds), 10):
-        chunk = embeds[i:i + 10]
-        payload: dict = {'embeds': chunk}
-        if i == 0:
-            payload['content'] = summary
+    # First message: standalone summary (text only, no embeds)
+    payloads: list[dict] = [{'content': summary}]
+    # Then one message per template
+    for embed in embeds:
+        payloads.append({'embeds': [embed]})
+    for payload in payloads:
         try:
             http_post(os.environ['DISCORD_WEBHOOK_URL_TEMPLATES'], payload)
         except Exception as e:
-            titles = ', '.join(t['title'] for t in chunk)
-            print(f'Discord notification failed for batch [{titles}]: {e}')
+            titles = ', '.join(em['title'] for em in payload.get('embeds', []))
+            label = titles or 'summary'
+            print(f'Discord notification failed for [{label}]: {e}')
             error_log.log_error(
                 'framer_templates', 'warning',
-                f'Discord batch notification failed',
-                {'error': str(e), 'count': len(chunk)},
+                'Discord batch notification failed',
+                {'error': str(e)},
             )
 
 
