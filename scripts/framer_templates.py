@@ -350,7 +350,7 @@ def notify_discord_batch(templates: list[dict]) -> None:
             error_log.log_error(
                 'framer_templates', 'warning',
                 'Discord batch notification failed',
-                {'error': str(e)},
+                {'label': label, 'error': str(e)},
             )
 
 
