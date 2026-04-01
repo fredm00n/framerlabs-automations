@@ -10,6 +10,18 @@ Read CLAUDE.md and REDDIT_LEADS_REVIEWER.md, then follow the instructions in RED
 
 ---
 
+## Before you begin
+
+Pull the latest code to ensure the working directory is not stale:
+
+```bash
+git pull origin main
+```
+
+If this fails due to local changes, do not proceed — report the error and exit.
+
+---
+
 ## Step 1 — Verify credentials
 
 Ensure the following environment variables are available (set by the scheduled trigger):
