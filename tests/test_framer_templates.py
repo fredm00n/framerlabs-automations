@@ -650,6 +650,44 @@ class TestNotifyDiscordBatch(unittest.TestCase):
             ft.notify_discord_batch(templates)  # must not raise
         self.assertEqual(mock_post.call_count, 4)
 
+    def test_error_log_includes_label_in_context(self):
+        """Failed notifications log the template title (or 'summary') in the error context."""
+        import error_log as el
+        with patch('framer_templates.http_post', side_effect=Exception('fail')), \
+             patch.object(el, 'log_error') as mock_log:
+            ft.notify_discord_batch([_DISCORD_TEMPLATE])
+        # Should be called at least once (for the summary or embed failure)
+        self.assertTrue(mock_log.called)
+        # Find any call where the context includes 'label'
+        contexts = [call[0][3] for call in mock_log.call_args_list if len(call[0]) >= 4]
+        self.assertTrue(
+            any('label' in (ctx or {}) for ctx in contexts),
+            f"Expected 'label' key in at least one log_error context, got: {contexts}",
+        )
+
+    def test_error_log_label_is_summary_for_text_only_message(self):
+        """The summary (text-only) payload failure logs label='summary'."""
+        import error_log as el
+        # Only the summary message fails; subsequent embed calls succeed.
+        with patch('framer_templates.http_post', side_effect=[Exception('fail'), {}]), \
+             patch.object(el, 'log_error') as mock_log:
+            ft.notify_discord_batch([_DISCORD_TEMPLATE])
+        contexts = [call[0][3] for call in mock_log.call_args_list if len(call[0]) >= 4]
+        labels = [(ctx or {}).get('label') for ctx in contexts]
+        self.assertIn('summary', labels)
+
+    def test_error_log_label_is_title_for_embed_message(self):
+        """An embed payload failure logs the template title as label."""
+        import error_log as el
+        t = {**_DISCORD_TEMPLATE, 'title': 'My Special Template'}
+        # Summary succeeds; embed fails.
+        with patch('framer_templates.http_post', side_effect=[{}, Exception('fail')]), \
+             patch.object(el, 'log_error') as mock_log:
+            ft.notify_discord_batch([t])
+        contexts = [call[0][3] for call in mock_log.call_args_list if len(call[0]) >= 4]
+        labels = [(ctx or {}).get('label') for ctx in contexts]
+        self.assertIn('My Special Template', labels)
+
     def test_notify_discord_wrapper_calls_batch(self):
         with patch('framer_templates.http_post', return_value={}) as mock_post:
             ft.notify_discord(_DISCORD_TEMPLATE)
