@@ -114,6 +114,7 @@ def fetch_from_rsc() -> list[dict]:
     # 20 new items, which means we've reached the last page.
     seen: set[str] = set()
     templates: list[dict] = []
+    last_body = ''
 
     for page in range(1, 3):
         print(f'Fetching Framer marketplace via RSC (page {page})...')
@@ -121,6 +122,7 @@ def fetch_from_rsc() -> list[dict]:
         if page > 1:
             url += f'&page={page}'
         body = http_get(url, headers=_RSC_HEADERS)
+        last_body = body
 
         count_before = len(templates)
         _parse_rsc_body(body, seen, templates)
@@ -135,7 +137,7 @@ def fetch_from_rsc() -> list[dict]:
         error_log.log_error(
             'framer_templates', 'warning',
             f'Only {len(templates)} templates parsed from RSC — format may have changed',
-            {'count': len(templates)},
+            {'count': len(templates), 'body_preview': last_body[:500]},
         )
     return templates
 
@@ -302,6 +304,7 @@ def _build_embed(template: dict) -> dict:
     price = template.get('price', '?')
     meta_title = template.get('meta_title', '')
     demo_url = template.get('demo_url', '')
+    remixes = template.get('remixes') or 0
     if author_slug:
         author_text = f"[{author}](https://www.framer.com/marketplace/profiles/{author_slug}/)"
     else:
@@ -311,6 +314,8 @@ def _build_embed(template: dict) -> dict:
         description += f"\n{meta_title}"
     if demo_url:
         description += f"\n[Live Demo]({demo_url})"
+    if remixes:
+        description += f"\n{remixes} remix{'es' if remixes != 1 else ''}"
     embed: dict = {
         'title': template['title'],
         'url': template['url'],
@@ -319,6 +324,10 @@ def _build_embed(template: dict) -> dict:
     }
     if template.get('thumbnail'):
         embed['image'] = {'url': template['thumbnail']}
+    # Show when the template was published so Discord renders a human-readable date
+    published_at = template.get('published_at', '')
+    if published_at:
+        embed['timestamp'] = published_at
     return embed
 
 
