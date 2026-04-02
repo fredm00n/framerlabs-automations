@@ -199,6 +199,42 @@ class TestFetchFromRsc(unittest.TestCase):
         output = ' '.join(str(c) for c in mock_print.call_args_list)
         self.assertIn('WARNING', output)
 
+    def test_error_log_includes_body_preview_when_fewer_than_five_templates(self):
+        """When < 5 templates parsed, the error log context must include a body_preview."""
+        import error_log as el
+        body = _rsc_item('only-one')
+        with patch('framer_templates.http_get', return_value=body), \
+             patch.object(el, 'log_error') as mock_log:
+            ft.fetch_from_rsc()
+        self.assertTrue(mock_log.called)
+        # Find the call that logs the low-count warning
+        low_count_calls = [
+            c for c in mock_log.call_args_list
+            if len(c[0]) >= 4 and isinstance(c[0][3], dict) and 'count' in c[0][3]
+        ]
+        self.assertTrue(low_count_calls, 'Expected at least one log_error call with count in context')
+        ctx = low_count_calls[0][0][3]
+        self.assertIn('body_preview', ctx)
+        self.assertIsInstance(ctx['body_preview'], str)
+        # body_preview should contain at least the start of the RSC body
+        self.assertTrue(len(ctx['body_preview']) > 0)
+
+    def test_body_preview_is_capped_at_500_chars(self):
+        """body_preview in the error log context must be at most 500 characters."""
+        import error_log as el
+        # Construct a body with a single template (< 5) but very long content
+        long_body = _rsc_item('only-one') + ('x' * 2000)
+        with patch('framer_templates.http_get', return_value=long_body), \
+             patch.object(el, 'log_error') as mock_log:
+            ft.fetch_from_rsc()
+        low_count_calls = [
+            c for c in mock_log.call_args_list
+            if len(c[0]) >= 4 and isinstance(c[0][3], dict) and 'count' in c[0][3]
+        ]
+        self.assertTrue(low_count_calls)
+        ctx = low_count_calls[0][0][3]
+        self.assertLessEqual(len(ctx['body_preview']), 500)
+
     def test_no_warning_with_five_or_more_templates(self):
         body = '\n'.join(_rsc_item(f'slug-{i}', id_=str(i)) for i in range(5))
         with patch('framer_templates.http_get', return_value=body), \
@@ -586,6 +622,40 @@ class TestBuildEmbed(unittest.TestCase):
         embed = ft._build_embed(t)
         self.assertIn('Portfolio Template', embed['description'])
         self.assertIn('[Live Demo](https://demo.framer.website/)', embed['description'])
+
+    def test_timestamp_set_when_published_at_present(self):
+        t = {**_DISCORD_TEMPLATE, 'published_at': '2026-03-15T10:00:00Z'}
+        embed = ft._build_embed(t)
+        self.assertEqual(embed.get('timestamp'), '2026-03-15T10:00:00Z')
+
+    def test_no_timestamp_key_when_published_at_absent(self):
+        embed = ft._build_embed(_DISCORD_TEMPLATE)
+        self.assertNotIn('timestamp', embed)
+
+    def test_no_timestamp_key_when_published_at_empty(self):
+        t = {**_DISCORD_TEMPLATE, 'published_at': ''}
+        embed = ft._build_embed(t)
+        self.assertNotIn('timestamp', embed)
+
+    def test_description_includes_remixes_when_nonzero(self):
+        t = {**_DISCORD_TEMPLATE, 'remixes': 5}
+        embed = ft._build_embed(t)
+        self.assertIn('5 remixes', embed['description'])
+
+    def test_description_remix_singular_when_one(self):
+        t = {**_DISCORD_TEMPLATE, 'remixes': 1}
+        embed = ft._build_embed(t)
+        self.assertIn('1 remix', embed['description'])
+        self.assertNotIn('1 remixes', embed['description'])
+
+    def test_description_excludes_remixes_when_zero(self):
+        t = {**_DISCORD_TEMPLATE, 'remixes': 0}
+        embed = ft._build_embed(t)
+        self.assertNotIn('remix', embed['description'])
+
+    def test_description_excludes_remixes_when_absent(self):
+        embed = ft._build_embed(_DISCORD_TEMPLATE)
+        self.assertNotIn('remix', embed['description'])
 
 
 # ---------------------------------------------------------------------------

@@ -99,7 +99,8 @@ Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort
 
 **Deferred improvements:**
 - Categories/tags — previously noted as present in the RSC payload, but an inspection of the live payload (2026-03-27) found no category/tag fields at the item level. The RSC format may have changed, or categories may be on a different endpoint. Not pursued until confirmed present.
-- RSC format is an internal Next.js mechanism — Framer could change the response structure without notice. When parsing yields < 5 templates a Discord alert is sent to `DISCORD_ALERTS_WEBHOOK_URL`; inspect the raw RSC payload and update `_extract_json_object` / the `"item":{"id":` search key
+- RSC format is an internal Next.js mechanism — Framer could change the response structure without notice. When parsing yields < 5 templates a Discord alert is sent to `DISCORD_ALERTS_WEBHOOK_URL` and a `body_preview` (first 500 chars) is logged to `logs/errors.jsonl` to aid diagnosis; inspect the raw RSC payload and update `_extract_json_object` / the `"item":{"id":` search key if needed
+- Alternative RSC search keys — if the RSC stream changes the `"item":` key to something else (e.g. `"templateItem":`, `"marketplaceItem":`), the parser would yield 0 results. A fallback multi-key search was considered but skipped since the correct new key cannot be determined without a live payload sample; the `body_preview` in the error log is intended to inform that fix
 - Richer HTTP error reporting — printing the response body on Notion API errors (4xx/5xx) would aid debugging; skipped as the existing error messages are sufficient for now
 
 ---
