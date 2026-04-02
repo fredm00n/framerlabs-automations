@@ -9,7 +9,7 @@ import os
 import sys
 import unittest
 import urllib.error
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import MagicMock, mock_open, patch, ANY
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 import framer_templates as ft
@@ -370,6 +370,80 @@ class TestParseRscBody(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# infer_category / group_by_category
+# ---------------------------------------------------------------------------
+
+def _template(title='T', meta_title='', slug='s', price='Free', author='A'):
+    return {
+        'title': title, 'meta_title': meta_title, 'slug': slug,
+        'url': f'https://www.framer.com/marketplace/templates/{slug}/',
+        'author': author, 'author_slug': '', 'price': price,
+        'thumbnail': '', 'published_at': '', 'demo_url': '', 'remixes': 0,
+    }
+
+
+class TestInferCategory(unittest.TestCase):
+
+    def test_matches_title_keyword(self):
+        self.assertEqual(ft.infer_category(_template(title='Gym Fitness Pro')), 'Health & Fitness')
+
+    def test_matches_meta_title_keyword(self):
+        self.assertEqual(ft.infer_category(_template(title='Flavor', meta_title='Restaurant Website')), 'Food & Dining')
+
+    def test_case_insensitive(self):
+        self.assertEqual(ft.infer_category(_template(title='PORTFOLIO Site')), 'Portfolio & Creative')
+
+    def test_returns_other_when_no_match(self):
+        self.assertEqual(ft.infer_category(_template(title='Abstract Minimal')), 'Other')
+
+    def test_first_matching_category_wins(self):
+        # "SaaS" appears before "Landing Page" in CATEGORY_KEYWORDS
+        self.assertEqual(ft.infer_category(_template(title='SaaS Landing Page')), 'SaaS & Tech')
+
+    def test_multi_word_keyword(self):
+        self.assertEqual(ft.infer_category(_template(title='Luxury Real Estate')), 'Real Estate')
+
+
+class TestGroupByCategory(unittest.TestCase):
+
+    def test_groups_templates_correctly(self):
+        templates = [
+            _template(title='Gym Pro', slug='gym'),
+            _template(title='My Portfolio', slug='port'),
+            _template(title='Yoga Studio', slug='yoga'),
+        ]
+        grouped = ft.group_by_category(templates)
+        self.assertIn('Health & Fitness', grouped)
+        self.assertEqual(len(grouped['Health & Fitness']), 2)
+        self.assertIn('Portfolio & Creative', grouped)
+        self.assertEqual(len(grouped['Portfolio & Creative']), 1)
+
+    def test_other_category_at_end(self):
+        templates = [
+            _template(title='Abstract Minimal', slug='abs'),
+            _template(title='Gym Pro', slug='gym'),
+        ]
+        grouped = ft.group_by_category(templates)
+        keys = list(grouped.keys())
+        self.assertEqual(keys[-1], 'Other')
+
+    def test_empty_list(self):
+        self.assertEqual(ft.group_by_category([]), {})
+
+    def test_preserves_category_order(self):
+        templates = [
+            _template(title='My Blog', slug='blog'),
+            _template(title='Restaurant', slug='rest'),
+            _template(title='SaaS App', slug='saas'),
+        ]
+        grouped = ft.group_by_category(templates)
+        keys = list(grouped.keys())
+        # Food & Dining comes before SaaS & Tech in CATEGORY_KEYWORDS
+        self.assertLess(keys.index('Food & Dining'), keys.index('SaaS & Tech'))
+        self.assertLess(keys.index('SaaS & Tech'), keys.index('Blog & Magazine'))
+
+
+# ---------------------------------------------------------------------------
 # get_seen_slugs
 # ---------------------------------------------------------------------------
 
@@ -659,6 +733,56 @@ class TestBuildEmbed(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# _build_summary_embed
+# ---------------------------------------------------------------------------
+
+class TestBuildSummaryEmbed(unittest.TestCase):
+
+    def test_singular_title_for_one_template(self):
+        embed = ft._build_summary_embed([_template(title='Gym Pro')])
+        self.assertEqual(embed['title'], '1 new Framer template')
+
+    def test_plural_title_for_multiple_templates(self):
+        templates = [_template(title='A', slug='a'), _template(title='B', slug='b')]
+        embed = ft._build_summary_embed(templates)
+        self.assertEqual(embed['title'], '2 new Framer templates')
+
+    def test_description_contains_category_headers(self):
+        templates = [
+            _template(title='Gym Pro', slug='gym'),
+            _template(title='My Portfolio', slug='port'),
+        ]
+        embed = ft._build_summary_embed(templates)
+        self.assertIn('**Health & Fitness**', embed['description'])
+        self.assertIn('**Portfolio & Creative**', embed['description'])
+
+    def test_description_contains_template_links(self):
+        t = _template(title='Cool Template', slug='cool', author='Alice', price='$29')
+        embed = ft._build_summary_embed([t])
+        self.assertIn('[Cool Template]', embed['description'])
+        self.assertIn('by Alice', embed['description'])
+        self.assertIn('$29', embed['description'])
+
+    def test_color_matches_brand(self):
+        embed = ft._build_summary_embed([_template()])
+        self.assertEqual(embed['color'], 0x5865F2)
+
+    def test_url_points_to_marketplace(self):
+        embed = ft._build_summary_embed([_template()])
+        self.assertIn('marketplace', embed['url'])
+
+    def test_truncates_long_description(self):
+        # 60 templates with long names should trigger truncation
+        templates = [
+            _template(title=f'Very Long Template Name Number {i} With Extra Words', slug=f's-{i}')
+            for i in range(60)
+        ]
+        embed = ft._build_summary_embed(templates)
+        self.assertLessEqual(len(embed['description']), 4096)
+        self.assertIn('... and', embed['description'])
+
+
+# ---------------------------------------------------------------------------
 # notify_discord_batch
 # ---------------------------------------------------------------------------
 
@@ -667,14 +791,14 @@ class TestNotifyDiscordBatch(unittest.TestCase):
     def setUp(self):
         os.environ['DISCORD_WEBHOOK_URL_TEMPLATES'] = 'https://discord.com/api/webhooks/test'
 
-    def test_single_template_summary_singular(self):
+    def test_single_template_summary_embed(self):
         with patch('framer_templates.http_post', return_value={}) as mock_post:
             ft.notify_discord_batch([_DISCORD_TEMPLATE])
-        # 1 summary + 1 embed = 2 calls
+        # 1 summary embed + 1 detail embed = 2 calls
         self.assertEqual(mock_post.call_count, 2)
         summary_payload = mock_post.call_args_list[0][0][1]
-        self.assertEqual(summary_payload['content'], '1 new Framer template published on the marketplace:')
-        self.assertNotIn('embeds', summary_payload)
+        self.assertIn('embeds', summary_payload)
+        self.assertEqual(summary_payload['embeds'][0]['title'], '1 new Framer template')
         embed_payload = mock_post.call_args_list[1][0][1]
         self.assertEqual(len(embed_payload['embeds']), 1)
 
@@ -685,8 +809,8 @@ class TestNotifyDiscordBatch(unittest.TestCase):
         # 1 summary + 3 embeds = 4 calls
         self.assertEqual(mock_post.call_count, 4)
         summary_payload = mock_post.call_args_list[0][0][1]
-        self.assertEqual(summary_payload['content'], '3 new Framer templates published on the marketplace:')
-        self.assertNotIn('embeds', summary_payload)
+        self.assertIn('embeds', summary_payload)
+        self.assertEqual(summary_payload['embeds'][0]['title'], '3 new Framer templates')
         for i in range(1, 4):
             self.assertEqual(len(mock_post.call_args_list[i][0][1]['embeds']), 1)
 
@@ -696,15 +820,13 @@ class TestNotifyDiscordBatch(unittest.TestCase):
             ft.notify_discord_batch(templates)
         # 1 summary + 12 individual embeds = 13 calls
         self.assertEqual(mock_post.call_count, 13)
-        # First call is text-only summary
+        # First call is summary embed
         summary_payload = mock_post.call_args_list[0][0][1]
-        self.assertIn('content', summary_payload)
-        self.assertEqual(summary_payload['content'], '12 new Framer templates published on the marketplace:')
-        self.assertNotIn('embeds', summary_payload)
+        self.assertIn('embeds', summary_payload)
+        self.assertEqual(summary_payload['embeds'][0]['title'], '12 new Framer templates')
         # Each subsequent call has exactly 1 embed
         for i in range(1, 13):
             payload = mock_post.call_args_list[i][0][1]
-            self.assertNotIn('content', payload)
             self.assertEqual(len(payload['embeds']), 1)
 
     def test_empty_list_does_nothing(self):
@@ -735,8 +857,8 @@ class TestNotifyDiscordBatch(unittest.TestCase):
             f"Expected 'label' key in at least one log_error context, got: {contexts}",
         )
 
-    def test_error_log_label_is_summary_for_text_only_message(self):
-        """The summary (text-only) payload failure logs label='summary'."""
+    def test_error_log_label_is_title_for_summary_embed(self):
+        """The summary embed payload failure logs the summary embed title as label."""
         import error_log as el
         # Only the summary message fails; subsequent embed calls succeed.
         with patch('framer_templates.http_post', side_effect=[Exception('fail'), {}]), \
@@ -744,7 +866,7 @@ class TestNotifyDiscordBatch(unittest.TestCase):
             ft.notify_discord_batch([_DISCORD_TEMPLATE])
         contexts = [call[0][3] for call in mock_log.call_args_list if len(call[0]) >= 4]
         labels = [(ctx or {}).get('label') for ctx in contexts]
-        self.assertIn('summary', labels)
+        self.assertTrue(any('new Framer template' in (l or '') for l in labels))
 
     def test_error_log_label_is_title_for_embed_message(self):
         """An embed payload failure logs the template title as label."""
@@ -761,11 +883,10 @@ class TestNotifyDiscordBatch(unittest.TestCase):
     def test_notify_discord_wrapper_calls_batch(self):
         with patch('framer_templates.http_post', return_value={}) as mock_post:
             ft.notify_discord(_DISCORD_TEMPLATE)
-        # 1 summary + 1 embed = 2 calls
+        # 1 summary embed + 1 detail embed = 2 calls
         self.assertEqual(mock_post.call_count, 2)
         summary_payload = mock_post.call_args_list[0][0][1]
-        self.assertIn('content', summary_payload)
-        self.assertNotIn('embeds', summary_payload)
+        self.assertIn('embeds', summary_payload)
 
 
 # ---------------------------------------------------------------------------
@@ -794,17 +915,19 @@ class TestMain(unittest.TestCase):
         os.environ['DISCORD_WEBHOOK_URL_TEMPLATES'] = 'https://discord.com/api/webhooks/test'
 
     def _run(self, templates, seen_slugs):
-        """Run main() with all I/O mocked; return (save_mock, notify_mock)."""
+        """Run main() with all I/O mocked; return (save_mock, notify_mock, x_mock)."""
         save_mock = MagicMock()
         notify_mock = MagicMock()
+        x_mock = MagicMock()
         with patch('framer_templates.fetch_framer_templates', return_value=templates), \
              patch('framer_templates.get_seen_slugs', return_value=seen_slugs), \
              patch('framer_templates.save_to_notion', save_mock), \
              patch('framer_templates.notify_discord_batch', notify_mock), \
+             patch('framer_templates.post_to_x', x_mock), \
              patch('framer_templates._warn_discord'), \
              patch('builtins.open', side_effect=FileNotFoundError):
             ft.main()
-        return save_mock, notify_mock
+        return save_mock, notify_mock, x_mock
 
     def test_missing_env_var_raises_system_exit(self):
         del os.environ['NOTION_TOKEN']
@@ -814,22 +937,25 @@ class TestMain(unittest.TestCase):
         os.environ['NOTION_TOKEN'] = 'test_token'
 
     def test_no_new_templates_skips_save_and_notify(self):
-        save, notify = self._run(_TEMPLATES, {'template-a', 'template-b'})
+        save, notify, x = self._run(_TEMPLATES, {'template-a', 'template-b'})
         save.assert_not_called()
         notify.assert_not_called()
+        x.assert_not_called()
 
     def test_first_run_seeds_db_without_discord(self):
         # Empty seen_slugs → first run
-        save, notify = self._run(_TEMPLATES, set())
+        save, notify, x = self._run(_TEMPLATES, set())
         self.assertEqual(save.call_count, 2)
         notify.assert_not_called()
+        x.assert_not_called()
 
     def test_normal_run_saves_and_notifies_only_new_templates(self):
         # template-a already seen; template-b is new
-        save, notify = self._run(_TEMPLATES, {'template-a'})
+        save, notify, x = self._run(_TEMPLATES, {'template-a'})
         save.assert_called_once()
         self.assertEqual(save.call_args[0][0]['slug'], 'template-b')
         notify.assert_called_once()
+        x.assert_called_once()
 
     def test_save_failure_continues_processing_remaining_templates(self):
         save_mock = MagicMock(side_effect=[Exception('Notion error'), None])
@@ -838,6 +964,7 @@ class TestMain(unittest.TestCase):
              patch('framer_templates.get_seen_slugs', return_value=set()), \
              patch('framer_templates.save_to_notion', save_mock), \
              patch('framer_templates.notify_discord_batch', notify_mock), \
+             patch('framer_templates.post_to_x'), \
              patch('framer_templates._warn_discord'), \
              patch('builtins.open', side_effect=FileNotFoundError):
             ft.main()  # must not raise
@@ -849,6 +976,7 @@ class TestMain(unittest.TestCase):
              patch('framer_templates.get_seen_slugs', return_value=set()), \
              patch('framer_templates.save_to_notion'), \
              patch('framer_templates.notify_discord_batch'), \
+             patch('framer_templates.post_to_x'), \
              patch('framer_templates._warn_discord') as warn_mock, \
              patch('builtins.open', side_effect=FileNotFoundError):
             ft.main()
@@ -865,6 +993,7 @@ class TestMain(unittest.TestCase):
              patch('framer_templates.get_seen_slugs', return_value=set()), \
              patch('framer_templates.save_to_notion'), \
              patch('framer_templates.notify_discord_batch'), \
+             patch('framer_templates.post_to_x'), \
              patch('framer_templates._warn_discord') as warn_mock, \
              patch('builtins.open', side_effect=FileNotFoundError):
             ft.main()
@@ -961,6 +1090,7 @@ class TestWriteSummary(unittest.TestCase):
              patch('framer_templates._warn_discord'), \
              patch('framer_templates.save_to_notion'), \
              patch('framer_templates.notify_discord_batch'), \
+             patch('framer_templates.post_to_x'), \
              patch('framer_templates._write_summary') as mock_summary, \
              patch('builtins.open', side_effect=FileNotFoundError):
             ft.main()
@@ -979,6 +1109,7 @@ class TestWriteSummary(unittest.TestCase):
              patch('framer_templates._warn_discord'), \
              patch('framer_templates.save_to_notion'), \
              patch('framer_templates.notify_discord_batch'), \
+             patch('framer_templates.post_to_x'), \
              patch('framer_templates._write_summary') as mock_summary, \
              patch('builtins.open', side_effect=FileNotFoundError):
             ft.main()
@@ -986,6 +1117,117 @@ class TestWriteSummary(unittest.TestCase):
         summary_text = mock_summary.call_args[0][0]
         self.assertIn('1 new template', summary_text)
         self.assertIn('already tracked', summary_text)
+
+
+# ---------------------------------------------------------------------------
+# _build_tweet_text
+# ---------------------------------------------------------------------------
+
+class TestBuildTweetText(unittest.TestCase):
+
+    def test_within_280_chars(self):
+        templates = [_template(title=f'Template {i}', slug=f's{i}') for i in range(5)]
+        text = ft._build_tweet_text(templates)
+        self.assertLessEqual(len(text), 280)
+
+    def test_contains_marketplace_link(self):
+        text = ft._build_tweet_text([_template(title='Gym Pro')])
+        self.assertIn('framer.com/marketplace', text)
+
+    def test_contains_category_summary(self):
+        text = ft._build_tweet_text([_template(title='Gym Pro')])
+        self.assertIn('Health & Fitness', text)
+
+    def test_singular_for_one_template(self):
+        text = ft._build_tweet_text([_template()])
+        self.assertIn('1 new Framer template ', text)
+        # Intro line should use singular (not "templates")
+        intro = text.split('\n')[0]
+        self.assertNotIn('templates', intro)
+
+    def test_plural_for_multiple_templates(self):
+        text = ft._build_tweet_text([_template(slug='a'), _template(slug='b')])
+        self.assertIn('templates', text)
+
+    def test_truncation_with_many_templates(self):
+        templates = [_template(title=f'A Very Long Template Name {i}', slug=f's{i}', price='$99')
+                     for i in range(20)]
+        text = ft._build_tweet_text(templates)
+        self.assertLessEqual(len(text), 280)
+
+    def test_fallback_when_no_category_match(self):
+        text = ft._build_tweet_text([_template(title='Abstract Minimal')])
+        self.assertIn('just dropped', text)
+
+
+# ---------------------------------------------------------------------------
+# _oauth1_header
+# ---------------------------------------------------------------------------
+
+class TestOAuth1Header(unittest.TestCase):
+
+    def test_header_format(self):
+        header = ft._oauth1_header(
+            'POST', 'https://api.twitter.com/2/tweets', {},
+            'key', 'secret', 'token', 'token_secret',
+            nonce='testnonce', timestamp='1234567890',
+        )
+        self.assertTrue(header.startswith('OAuth '))
+        self.assertIn('oauth_consumer_key="key"', header)
+        self.assertIn('oauth_token="token"', header)
+        self.assertIn('oauth_signature_method="HMAC-SHA1"', header)
+        self.assertIn('oauth_signature=', header)
+
+    def test_deterministic_with_fixed_nonce_and_timestamp(self):
+        args = ('POST', 'https://api.twitter.com/2/tweets', {},
+                'ck', 'cs', 'at', 'ats')
+        kwargs = {'nonce': 'fixed', 'timestamp': '9999'}
+        h1 = ft._oauth1_header(*args, **kwargs)
+        h2 = ft._oauth1_header(*args, **kwargs)
+        self.assertEqual(h1, h2)
+
+
+# ---------------------------------------------------------------------------
+# post_to_x
+# ---------------------------------------------------------------------------
+
+class TestPostToX(unittest.TestCase):
+
+    _CRED_ENV = {
+        'TWITTER_API_KEY': 'ck',
+        'TWITTER_API_SECRET': 'cs',
+        'TWITTER_ACCESS_TOKEN': 'at',
+        'TWITTER_ACCESS_TOKEN_SECRET': 'ats',
+    }
+
+    def test_skips_silently_when_no_credentials(self):
+        for k in self._CRED_ENV:
+            os.environ.pop(k, None)
+        with patch('framer_templates.http_post') as mock_post:
+            ft.post_to_x([_template()])
+        mock_post.assert_not_called()
+
+    def test_skips_when_partial_credentials(self):
+        os.environ['TWITTER_API_KEY'] = 'ck'
+        for k in list(self._CRED_ENV)[1:]:
+            os.environ.pop(k, None)
+        with patch('framer_templates.http_post') as mock_post:
+            ft.post_to_x([_template()])
+        mock_post.assert_not_called()
+        os.environ.pop('TWITTER_API_KEY', None)
+
+    def test_calls_twitter_api_when_credentials_present(self):
+        with patch.dict('os.environ', self._CRED_ENV), \
+             patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.post_to_x([_template(title='Gym Pro')])
+        mock_post.assert_called_once()
+        url = mock_post.call_args[0][0]
+        self.assertIn('api.twitter.com', url)
+
+    def test_error_does_not_propagate(self):
+        with patch.dict('os.environ', self._CRED_ENV), \
+             patch('framer_templates.http_post', side_effect=Exception('network')):
+            ft.post_to_x([_template()])  # must not raise
 
 
 class TestHttpRetry(unittest.TestCase):
