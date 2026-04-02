@@ -51,7 +51,8 @@ Log rotation: the self-improvement session removes entries older than 7 days aft
 them, then commits the trimmed file.
 
 ### Notifications
-- **Data notifications** (`DISCORD_WEBHOOK_URL_TEMPLATES`, `DISCORD_WEBHOOK_URL_LEADS`): new discoveries. Templates send a standalone summary message followed by one embed per template. Each script has its own webhook/channel.
+- **Data notifications** (`DISCORD_WEBHOOK_URL_TEMPLATES`, `DISCORD_WEBHOOK_URL_LEADS`): new discoveries. Templates send a grouped summary embed (templates organised by inferred category) followed by one detail embed per template. Each script has its own webhook/channel.
+- **X/Twitter** (`TWITTER_API_KEY`, `TWITTER_API_SECRET`, `TWITTER_ACCESS_TOKEN`, `TWITTER_ACCESS_TOKEN_SECRET`): templates are also posted as a tweet (max 280 chars) with a category summary and template list. Silently skipped if credentials are not configured.
 - **System alerts** (`DISCORD_ALERTS_WEBHOOK_URL`): system-level warnings and errors (e.g. RSC parse failure, unexpected API errors). Separate channel so operational issues don't get lost in data traffic. All scripts must use `DISCORD_ALERTS_WEBHOOK_URL` for system alerts, not the data webhooks.
 
 ---
@@ -92,16 +93,17 @@ Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort
 
 - **Source:** Framer's Next.js RSC endpoint — fetched directly with `Rsc: 1` header, returns structured component data including all templates sorted by recent (no headless browser needed)
 - **State:** Notion DB `Framer Templates` (ID in `NOTION_DATABASE_ID`)
-- **Notifications:** Discord webhook on each new template
-- **First run:** seeds the DB silently — no Discord spam
+- **Notifications:** Discord grouped summary embed (by category) + one detail embed per template; optionally posts to X/Twitter (skipped if credentials not set)
+- **Category inference:** categories are inferred from template title/meta_title via keyword matching (e.g. "Restaurant" → Food & Dining, "SaaS" → SaaS & Tech). Categories are not available in the Framer RSC payload.
+- **First run:** seeds the DB silently — no Discord/X notifications
 - **Fields tracked:** title, slug, URL, author, author URL, price, discovered datetime, published datetime
 - **Pagination:** fetches up to 2 pages (40 templates) per run; pages are cumulative (`?page=N` returns items 1–N×20), stops early when a page yields fewer than 20 new items
 
 **Deferred improvements:**
-- Categories/tags — previously noted as present in the RSC payload, but an inspection of the live payload (2026-03-27) found no category/tag fields at the item level. The RSC format may have changed, or categories may be on a different endpoint. Not pursued until confirmed present.
 - RSC format is an internal Next.js mechanism — Framer could change the response structure without notice. When parsing yields < 5 templates a Discord alert is sent to `DISCORD_ALERTS_WEBHOOK_URL` and a `body_preview` (first 500 chars) is logged to `logs/errors.jsonl` to aid diagnosis; inspect the raw RSC payload and update `_extract_json_object` / the `"item":{"id":` search key if needed
 - Alternative RSC search keys — if the RSC stream changes the `"item":` key to something else (e.g. `"templateItem":`, `"marketplaceItem":`), the parser would yield 0 results. A fallback multi-key search was considered but skipped since the correct new key cannot be determined without a live payload sample; the `body_preview` in the error log is intended to inform that fix
 - Richer HTTP error reporting — printing the response body on Notion API errors (4xx/5xx) would aid debugging; skipped as the existing error messages are sufficient for now
+- Category inference accuracy — keyword matching may miscategorise edge cases; an LLM-based approach could be added if accuracy becomes important
 
 ---
 
@@ -161,6 +163,10 @@ Post Date, Discovered, Review Notes, Notified (checkbox)
 | `DISCORD_WEBHOOK_URL_TEMPLATES` | Discord webhook for new template notifications |
 | `DISCORD_WEBHOOK_URL_LEADS` | Discord webhook for approved Framer leads (separate channel) |
 | `DISCORD_ALERTS_WEBHOOK_URL` | Discord webhook for system-level errors and warnings (separate channel) |
+| `TWITTER_API_KEY` | Twitter/X API consumer key (optional — X posting skipped if not set) |
+| `TWITTER_API_SECRET` | Twitter/X API consumer secret |
+| `TWITTER_ACCESS_TOKEN` | Twitter/X user access token |
+| `TWITTER_ACCESS_TOKEN_SECRET` | Twitter/X user access token secret |
 
 ---
 

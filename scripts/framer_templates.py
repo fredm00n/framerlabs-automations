@@ -3,11 +3,17 @@
 Monitors Framer marketplace for new templates and notifies Discord.
 State is persisted in a Notion database.
 """
+import base64
+import hashlib
+import hmac
 import json
 import os
 import re
+import time
+import urllib.parse
 import urllib.request
 import urllib.error
+import uuid
 from datetime import datetime
 import error_log
 
@@ -226,6 +232,50 @@ def _extract_json_object(s: str, start: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Category inference
+# ---------------------------------------------------------------------------
+
+CATEGORY_KEYWORDS: dict[str, list[str]] = {
+    'Food & Dining': ['restaurant', 'cafe', 'coffee', 'food', 'recipe', 'bakery', 'menu', 'chef', 'dining', 'pizza', 'sushi', 'bar & grill'],
+    'Health & Fitness': ['fitness', 'gym', 'health', 'yoga', 'wellness', 'medical', 'clinic', 'dental', 'therapy', 'sport', 'workout', 'physio'],
+    'Portfolio & Creative': ['portfolio', 'photographer', 'artist', 'creative', 'studio', 'gallery', 'personal', 'resume', 'cv'],
+    'SaaS & Tech': ['saas', 'startup', 'app', 'software', 'tech', 'dashboard', 'analytics', 'ai', 'platform', 'devtool'],
+    'Agency': ['agency', 'marketing', 'consulting', 'firm', 'digital agency'],
+    'E-commerce & Retail': ['shop', 'store', 'ecommerce', 'e-commerce', 'fashion', 'clothing', 'jewelry', 'boutique'],
+    'Real Estate': ['real estate', 'property', 'realty', 'apartment', 'housing', 'rental'],
+    'Education': ['education', 'course', 'school', 'university', 'learning', 'academy', 'tutor'],
+    'Blog & Magazine': ['blog', 'magazine', 'news', 'journal', 'editorial'],
+    'Landing Page': ['landing', 'waitlist', 'coming soon', 'launch'],
+    'Non-profit & Community': ['charity', 'nonprofit', 'non-profit', 'church', 'community', 'volunteer'],
+}
+
+
+def infer_category(template: dict) -> str:
+    """Infer a category from the template's title and meta_title via keyword matching."""
+    text = (template.get('title', '') + ' ' + template.get('meta_title', '')).lower()
+    for category, keywords in CATEGORY_KEYWORDS.items():
+        for keyword in keywords:
+            if keyword in text:
+                return category
+    return 'Other'
+
+
+def group_by_category(templates: list[dict]) -> dict[str, list[dict]]:
+    """Group templates by inferred category, preserving CATEGORY_KEYWORDS order."""
+    groups: dict[str, list[dict]] = {}
+    for t in templates:
+        cat = infer_category(t)
+        groups.setdefault(cat, []).append(t)
+    ordered: dict[str, list[dict]] = {}
+    for cat in CATEGORY_KEYWORDS:
+        if cat in groups:
+            ordered[cat] = groups[cat]
+    if 'Other' in groups:
+        ordered['Other'] = groups['Other']
+    return ordered
+
+
+# ---------------------------------------------------------------------------
 # Notion state store
 # ---------------------------------------------------------------------------
 
@@ -331,21 +381,49 @@ def _build_embed(template: dict) -> dict:
     return embed
 
 
-def notify_discord_batch(templates: list[dict]) -> None:
-    """Send a standalone summary then one Discord message per template.
+def _build_summary_embed(templates: list[dict]) -> dict:
+    """Build a single Discord embed summarising new templates grouped by category."""
+    n = len(templates)
+    noun = 'template' if n == 1 else 'templates'
+    grouped = group_by_category(templates)
+    lines: list[str] = []
+    included = 0
+    for category, items in grouped.items():
+        lines.append(f'**{category}**')
+        for t in items:
+            author = t.get('author', 'unknown')
+            price = t.get('price', '?')
+            line = f"- [{t['title']}]({t['url']}) by {author} -- {price}"
+            if len('\n'.join(lines + [line])) > 3900:
+                remaining = n - included
+                lines.append(f'... and {remaining} more')
+                break
+            lines.append(line)
+            included += 1
+        else:
+            lines.append('')  # blank line between categories
+            continue
+        break  # truncation triggered
+    return {
+        'title': f'{n} new Framer {noun}',
+        'url': 'https://www.framer.com/marketplace/templates/?sort=recent',
+        'description': '\n'.join(lines).rstrip(),
+        'color': 0x5865F2,
+    }
 
-    First message is a text-only summary (e.g. "3 new Framer templates
-    published on the marketplace:"), followed by one message per template
-    each containing a single embed.
+
+def notify_discord_batch(templates: list[dict]) -> None:
+    """Send a grouped summary embed then one Discord message per template.
+
+    First message is a rich embed summarising all templates grouped by
+    category, followed by one message per template each containing a
+    single embed with full details and thumbnail.
     """
     if not templates:
         return
-    n = len(templates)
-    noun = 'template' if n == 1 else 'templates'
-    summary = f"{n} new Framer {noun} published on the marketplace:"
     embeds = [_build_embed(t) for t in templates]
-    # First message: standalone summary (text only, no embeds)
-    payloads: list[dict] = [{'content': summary}]
+    # First message: grouped summary embed
+    payloads: list[dict] = [{'embeds': [_build_summary_embed(templates)]}]
     # Then one message per template
     for embed in embeds:
         payloads.append({'embeds': [embed]})
@@ -379,6 +457,120 @@ def _warn_discord(message: str) -> None:
     except Exception as e:
         print(f'Failed to send Discord alert: {e}')
         error_log.log_error('framer_templates', 'warning', 'Failed to send Discord alert', {'error': str(e)})
+
+
+# ---------------------------------------------------------------------------
+# X / Twitter
+# ---------------------------------------------------------------------------
+
+_TWITTER_CRED_KEYS = (
+    'TWITTER_API_KEY', 'TWITTER_API_SECRET',
+    'TWITTER_ACCESS_TOKEN', 'TWITTER_ACCESS_TOKEN_SECRET',
+)
+
+_TWITTER_POST_URL = 'https://api.twitter.com/2/tweets'
+
+
+def _percent_encode(s: str) -> str:
+    """RFC 5849 percent-encoding (unreserved chars stay unencoded)."""
+    return urllib.parse.quote(s, safe='')
+
+
+def _oauth1_header(method: str, url: str, body_params: dict,
+                   consumer_key: str, consumer_secret: str,
+                   token: str, token_secret: str,
+                   nonce: str | None = None,
+                   timestamp: str | None = None) -> str:
+    """Build an OAuth 1.0a Authorization header (HMAC-SHA1)."""
+    oauth_params = {
+        'oauth_consumer_key': consumer_key,
+        'oauth_nonce': nonce or uuid.uuid4().hex,
+        'oauth_signature_method': 'HMAC-SHA1',
+        'oauth_timestamp': timestamp or str(int(time.time())),
+        'oauth_token': token,
+        'oauth_version': '1.0',
+    }
+    all_params = {**oauth_params, **body_params}
+    param_str = '&'.join(
+        f'{_percent_encode(k)}={_percent_encode(v)}'
+        for k, v in sorted(all_params.items())
+    )
+    base_string = f'{method.upper()}&{_percent_encode(url)}&{_percent_encode(param_str)}'
+    signing_key = f'{_percent_encode(consumer_secret)}&{_percent_encode(token_secret)}'
+    sig = base64.b64encode(
+        hmac.new(signing_key.encode(), base_string.encode(), hashlib.sha1).digest()
+    ).decode()
+    oauth_params['oauth_signature'] = sig
+    header_parts = ', '.join(
+        f'{_percent_encode(k)}="{_percent_encode(v)}"'
+        for k, v in sorted(oauth_params.items())
+    )
+    return f'OAuth {header_parts}'
+
+
+def _build_tweet_text(templates: list[dict]) -> str:
+    """Build a tweet summarising new templates (max 280 chars)."""
+    n = len(templates)
+    grouped = group_by_category(templates)
+    cats = [cat for cat in grouped if cat != 'Other']
+    if cats:
+        cat_summary = ', '.join(cats[:3])
+        if len(cats) > 3:
+            cat_summary += f', and {len(cats) - 3} more'
+        intro = f'{n} new Framer template{"s" if n != 1 else ""} -- spanning {cat_summary}.'
+    else:
+        intro = f'{n} new Framer template{"s" if n != 1 else ""} just dropped.'
+
+    footer = '\nframer.com/marketplace/templates'
+    # Build template lines, truncating to fit 280 chars
+    lines: list[str] = []
+    for t in templates:
+        price = t.get('price', '?')
+        lines.append(f'- {t["title"]} ({price})')
+
+    # Assemble and truncate
+    while lines:
+        body = '\n'.join(lines)
+        text = f'{intro}\n\n{body}\n{footer}'
+        if len(text) <= 280:
+            return text
+        lines.pop()
+
+    # Fallback: just intro + footer
+    text = f'{intro}\n{footer}'
+    if len(text) <= 280:
+        return text
+    # Ultra-fallback: truncate intro
+    return text[:277] + '...'
+
+
+def post_to_x(templates: list[dict]) -> None:
+    """Post a tweet about new templates. No-op if Twitter credentials are not configured."""
+    creds = {k: os.environ.get(k, '') for k in _TWITTER_CRED_KEYS}
+    if not all(creds.values()):
+        print('Twitter credentials not configured -- skipping X post.')
+        return
+
+    tweet_text = _build_tweet_text(templates)
+    auth_header = _oauth1_header(
+        'POST', _TWITTER_POST_URL, {},
+        creds['TWITTER_API_KEY'], creds['TWITTER_API_SECRET'],
+        creds['TWITTER_ACCESS_TOKEN'], creds['TWITTER_ACCESS_TOKEN_SECRET'],
+    )
+    try:
+        http_post(
+            _TWITTER_POST_URL,
+            {'text': tweet_text},
+            headers={'Authorization': auth_header},
+        )
+        print(f'Posted to X: {tweet_text[:80]}...')
+    except Exception as e:
+        print(f'Failed to post to X: {e}')
+        error_log.log_error(
+            'framer_templates', 'warning',
+            'Failed to post to X/Twitter',
+            {'error': str(e), 'tweet_length': len(tweet_text)},
+        )
 
 
 def _write_summary(text: str) -> None:
@@ -447,6 +639,7 @@ def main() -> None:
 
     if not is_first_run and saved_templates:
         notify_discord_batch(saved_templates)
+        post_to_x(saved_templates)
 
     verb = 'Seeded' if is_first_run else 'Notified'
     print(f'Done. {verb} {len(new_templates)} template(s).')
