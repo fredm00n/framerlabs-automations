@@ -94,16 +94,16 @@ Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort
 - **Source:** Framer's Next.js RSC endpoint — fetched directly with `Rsc: 1` header, returns structured component data including all templates sorted by recent (no headless browser needed)
 - **State:** Notion DB `Framer Templates` (ID in `NOTION_DATABASE_ID`)
 - **Notifications:** Discord grouped summary embed (by category) + one detail embed per template; optionally posts to X/Twitter (skipped if credentials not set)
-- **Category inference:** categories are inferred from template title/meta_title via keyword matching (e.g. "Restaurant" → Food & Dining, "SaaS" → SaaS & Tech). Categories are not available in the Framer RSC payload.
+- **Category inference:** categories are inferred from template title/meta_title via keyword matching (e.g. "Restaurant" → Food & Dining, "SaaS" → SaaS & Tech). Categories are not available in the Framer RSC payload. The inferred category is stored as a `select` field in Notion.
 - **First run:** seeds the DB silently — no Discord/X notifications
-- **Fields tracked:** title, slug, URL, author, author URL, price, discovered datetime, published datetime
+- **Fields tracked:** title, slug, URL, author, author URL, price, category, discovered datetime, published datetime
 - **Pagination:** fetches up to 2 pages (40 templates) per run; pages are cumulative (`?page=N` returns items 1–N×20), stops early when a page yields fewer than 20 new items
 
 **Deferred improvements:**
 - RSC format is an internal Next.js mechanism — Framer could change the response structure without notice. When parsing yields < 5 templates a Discord alert is sent to `DISCORD_ALERTS_WEBHOOK_URL` and a `body_preview` (first 500 chars) is logged to `logs/errors.jsonl` to aid diagnosis; inspect the raw RSC payload and update `_extract_json_object` / the `"item":{"id":` search key if needed
 - Alternative RSC search keys — if the RSC stream changes the `"item":` key to something else (e.g. `"templateItem":`, `"marketplaceItem":`), the parser would yield 0 results. A fallback multi-key search was considered but skipped since the correct new key cannot be determined without a live payload sample; the `body_preview` in the error log is intended to inform that fix
 - Richer HTTP error reporting — printing the response body on Notion API errors (4xx/5xx) would aid debugging; skipped as the existing error messages are sufficient for now
-- Category inference accuracy — keyword matching may miscategorise edge cases; an LLM-based approach could be added if accuracy becomes important
+- Category inference accuracy — keyword matching may miscategorise edge cases; an LLM-based approach could be added if accuracy becomes important. The inferred category is now persisted to Notion (as a `select` field) so miscategorisations are visible and correctable in the DB.
 
 ---
 

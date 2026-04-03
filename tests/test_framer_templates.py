@@ -498,6 +498,7 @@ _BASE_TEMPLATE = {
     'slug': 'my-template',
     'url': 'https://www.framer.com/marketplace/templates/my-template/',
     'author': 'Alice',
+    'author_slug': '',
     'price': 'Free',
     'published_at': '2024-01-15',
     'thumbnail': '',
@@ -627,6 +628,28 @@ class TestSaveToNotion(unittest.TestCase):
             ft.save_to_notion(_BASE_TEMPLATE)
         props = mock_post.call_args[0][1]['properties']
         self.assertNotIn('Remixes', props)
+
+    def test_includes_category_select_property(self):
+        t = {**_BASE_TEMPLATE, 'title': 'Gym & Fitness Pro', 'meta_title': ''}
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.save_to_notion(t)
+        props = mock_post.call_args[0][1]['properties']
+        self.assertIn('Category', props)
+        self.assertEqual(props['Category']['select']['name'], 'Health & Fitness')
+
+    def test_category_defaults_to_other_when_no_match(self):
+        t = {**_BASE_TEMPLATE, 'title': 'Abstract Minimal', 'meta_title': ''}
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.save_to_notion(t)
+        props = mock_post.call_args[0][1]['properties']
+        self.assertEqual(props['Category']['select']['name'], 'Other')
+
+    def test_category_uses_meta_title_for_inference(self):
+        t = {**_BASE_TEMPLATE, 'title': 'Minimal', 'meta_title': 'Restaurant Website Template'}
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.save_to_notion(t)
+        props = mock_post.call_args[0][1]['properties']
+        self.assertEqual(props['Category']['select']['name'], 'Food & Dining')
 
 
 # ---------------------------------------------------------------------------
