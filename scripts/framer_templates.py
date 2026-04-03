@@ -310,6 +310,7 @@ def save_to_notion(template: dict) -> None:
         'Author': {'rich_text': [{'text': {'content': template.get('author', '')}}]},
         'Price': {'rich_text': [{'text': {'content': template.get('price', '')}}]},
         'Discovered': {'date': {'start': datetime.now().isoformat()}},
+        'Category': {'select': {'name': infer_category(template)}},
     }
     if template.get('meta_title'):
         props['Meta Title'] = {'rich_text': [{'text': {'content': template['meta_title']}}]}
