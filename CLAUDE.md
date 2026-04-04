@@ -144,8 +144,6 @@ Post Date, Discovered, Review Notes, Notified (checkbox)
 - `python3 scripts/reddit_leads.py --notify PAGE_ID` — send Discord embed + mark notified
 
 **Deferred improvements:**
-- Rate limiting — Reddit may throttle requests if many subreddits are fetched in rapid succession;
-  could add a small delay between feeds. Not added to keep it simple; failures are logged.
 - Smarter dedup — currently one Notion API call per filtered post; could batch with OR filters
   once Notion supports them natively
 - Score/rank leads — could add a rough confidence score before saving to help the reviewer

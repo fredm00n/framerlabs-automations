@@ -6,7 +6,7 @@ Phase 1 (this script, runs every 15 min via GitHub Actions):
   Fetch RSS → light keyword filter → dedup against Notion → save as "pending".
   No Discord notifications, no LLM reasoning.
 
-Phase 2 (daily dedicated Claude session, see REDDIT_LEADS_REVIEWER.md):
+Phase 2 (hourly dedicated Claude session on Haiku, see REDDIT_LEADS_REVIEWER.md):
   Review pending leads with reasoning → approve/reject → notify Discord.
 """
 import html as _html
@@ -15,11 +15,19 @@ import os
 import re
 import ssl
 import sys
+import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime
 import error_log
+
+# Seconds to wait between individual subreddit RSS fetches to avoid Reddit
+# rate-limiting (HTTP 429) when fetching 43 feeds in rapid succession.
+_INTER_FEED_DELAY = 1.5
+
+# Reddit requires a descriptive User-Agent; generic bots are frequently blocked.
+_REDDIT_USER_AGENT = 'python:framerlabs-automations:v1.0 (automated monitoring bot)'
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +193,7 @@ def http_get(url: str, headers: dict | None = None) -> str:
     def _do():
         req = urllib.request.Request(
             url,
-            headers={'User-Agent': 'automation-bot/1.0', **(headers or {})},
+            headers={'User-Agent': _REDDIT_USER_AGENT, **(headers or {})},
         )
         with urllib.request.urlopen(req, context=ctx, timeout=30) as r:
             return r.read().decode('utf-8')
@@ -498,7 +506,9 @@ def main() -> None:
     total_saved = 0
     fetch_errors = 0
 
-    for subreddit, feed_url in REDDIT_FEEDS.items():
+    for i, (subreddit, feed_url) in enumerate(REDDIT_FEEDS.items()):
+        if i > 0:
+            time.sleep(_INTER_FEED_DELAY)
         posts = fetch_reddit_posts(subreddit, feed_url)
         if posts is None:
             fetch_errors += 1
