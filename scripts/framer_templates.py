@@ -107,6 +107,15 @@ _RSC_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
 }
 
+# Primary RSC search key followed by fallback alternatives.
+# Framer's Next.js RSC stream embeds template objects under a JSON key that may
+# change between Next.js or Framer releases.  If the primary key yields < 5
+# results we try each fallback in order and use whichever produces the most
+# templates.  The winning key is logged so a human can update the primary if
+# needed.
+_RSC_PRIMARY_KEY = '"item":'
+_RSC_FALLBACK_KEYS = ('"templateItem":', '"marketplaceItem":')
+
 
 def fetch_from_rsc() -> list[dict]:
     # Framer uses Next.js RSC (React Server Components). Fetching the marketplace
@@ -120,7 +129,7 @@ def fetch_from_rsc() -> list[dict]:
     # 20 new items, which means we've reached the last page.
     seen: set[str] = set()
     templates: list[dict] = []
-    last_body = ''
+    bodies: list[str] = []
 
     for page in range(1, 3):
         print(f'Fetching Framer marketplace via RSC (page {page})...')
@@ -128,18 +137,44 @@ def fetch_from_rsc() -> list[dict]:
         if page > 1:
             url += f'&page={page}'
         body = http_get(url, headers=_RSC_HEADERS)
-        last_body = body
+        bodies.append(body)
 
         count_before = len(templates)
-        _parse_rsc_body(body, seen, templates)
+        _parse_rsc_body(body, seen, templates, _RSC_PRIMARY_KEY)
         new_this_page = len(templates) - count_before
 
         if new_this_page < 20:
             break
 
+    # If the primary key produced fewer than 5 results, try fallback keys across
+    # all fetched pages to recover from an RSC format change automatically.
+    if len(templates) < 5:
+        best_key = _RSC_PRIMARY_KEY
+        best_templates: list[dict] = templates
+        for fallback_key in _RSC_FALLBACK_KEYS:
+            candidate_seen: set[str] = set()
+            candidate_templates: list[dict] = []
+            for body in bodies:
+                _parse_rsc_body(body, candidate_seen, candidate_templates, fallback_key)
+            if len(candidate_templates) > len(best_templates):
+                best_templates = candidate_templates
+                best_key = fallback_key
+        if best_key != _RSC_PRIMARY_KEY:
+            print(f'Primary RSC key yielded {len(templates)} template(s); '
+                  f'fallback key {best_key!r} yielded {len(best_templates)} — using fallback.')
+            error_log.log_error(
+                'framer_templates', 'warning',
+                f'RSC primary key {_RSC_PRIMARY_KEY!r} yielded only {len(templates)} template(s); '
+                f'fallback key {best_key!r} yielded {len(best_templates)}',
+                {'primary_count': len(templates), 'fallback_key': best_key,
+                 'fallback_count': len(best_templates)},
+            )
+            templates = best_templates
+
     print(f'Parsed {len(templates)} templates from RSC.')
     if len(templates) < 5:
         print(f'WARNING: only {len(templates)} templates parsed — RSC output may be incomplete.')
+        last_body = bodies[-1] if bodies else ''
         error_log.log_error(
             'framer_templates', 'warning',
             f'Only {len(templates)} templates parsed from RSC — format may have changed',
@@ -148,22 +183,27 @@ def fetch_from_rsc() -> list[dict]:
     return templates
 
 
-def _parse_rsc_body(body: str, seen: set, templates: list) -> None:
+def _parse_rsc_body(body: str, seen: set, templates: list,
+                    search_key: str = '"item":') -> None:
     """Parse template items from an RSC body, appending new ones to templates in-place.
 
     The RSC stream may emit ``"item":{"id":`` with or without whitespace between
     the colon and the opening brace (e.g. ``"item": {"id":``).  We search for the
-    key prefix ``"item":`` and then skip any intervening whitespace before
+    key prefix (``search_key``) and then skip any intervening whitespace before
     locating the ``{`` that starts the JSON object passed to
     ``_extract_json_object``.
+
+    ``search_key`` defaults to ``'"item":'`` (the primary Framer RSC key) but
+    callers may supply an alternative (e.g. ``'"templateItem":'``) to probe
+    fallback keys when the primary yields too few results.
     """
-    search = '"item":'
+    search = search_key
     pos = 0
     while True:
         idx = body.find(search, pos)
         if idx == -1:
             break
-        # Skip optional whitespace between "item": and the opening brace
+        # Skip optional whitespace between the key and the opening brace
         obj_start = idx + len(search)
         while obj_start < len(body) and body[obj_start] in ' \t\r\n':
             obj_start += 1
