@@ -131,6 +131,19 @@ def _rsc_item(slug, id_='abc', title='T', price='Free', author='A',
     )
 
 
+def _rsc_item_key(slug, key='"item":', id_='abc', title='T', price='Free',
+                  author='A', author_slug='a-studio',
+                  thumbnail='https://cdn.example.com/t.jpg', published='$D2024-01-15',
+                  meta_title='A Great Template', demo_url='https://demo.framer.website/',
+                  remixes=5):
+    """Like _rsc_item but allows specifying a custom RSC key prefix."""
+    body = _rsc_item(slug, id_=id_, title=title, price=price, author=author,
+                     author_slug=author_slug, thumbnail=thumbnail, published=published,
+                     meta_title=meta_title, demo_url=demo_url, remixes=remixes)
+    # Replace the '"item":' prefix with the desired key
+    return body.replace('"item":', key, 1)
+
+
 def _full_page(offset=0):
     """Return an RSC body string containing exactly 20 templates."""
     return '\n'.join(_rsc_item(f'slug-{offset + i}', id_=str(offset + i)) for i in range(20))
@@ -367,6 +380,119 @@ class TestParseRscBody(unittest.TestCase):
         _, templates = self._parse(body)
         self.assertEqual(len(templates), 1)
         self.assertEqual(templates[0]['slug'], 'after-junk')
+
+    def test_custom_search_key_parses_templateItem(self):
+        # _parse_rsc_body must work with alternative RSC key "templateItem":
+        body = _rsc_item_key('alt-slug', key='"templateItem":', id_='55')
+        seen: set = set()
+        templates: list = []
+        ft._parse_rsc_body(body, seen, templates, search_key='"templateItem":')
+        self.assertEqual(len(templates), 1)
+        self.assertEqual(templates[0]['slug'], 'alt-slug')
+
+    def test_custom_search_key_ignores_primary_key_items(self):
+        # When searching with a fallback key, items using the primary key are not found
+        body = _rsc_item('primary-slug', id_='1')  # uses '"item":'
+        seen: set = set()
+        templates: list = []
+        ft._parse_rsc_body(body, seen, templates, search_key='"templateItem":')
+        self.assertEqual(len(templates), 0)
+
+    def test_default_search_key_is_primary(self):
+        # Calling without search_key uses the default '"item":' key
+        body = _rsc_item('default-key-slug', id_='1')
+        seen: set = set()
+        templates: list = []
+        ft._parse_rsc_body(body, seen, templates)
+        self.assertEqual(len(templates), 1)
+
+
+# ---------------------------------------------------------------------------
+# fetch_from_rsc — fallback key behaviour
+# ---------------------------------------------------------------------------
+
+class TestFetchFromRscFallback(unittest.TestCase):
+    """Tests for automatic fallback to alternative RSC search keys."""
+
+    def test_uses_fallback_key_when_primary_yields_fewer_than_five(self):
+        # Body has items under "templateItem": only — primary key finds nothing
+        body = _rsc_item_key('fb-slug', key='"templateItem":', id_='1')
+        with patch('framer_templates.http_get', return_value=body):
+            templates = ft.fetch_from_rsc()
+        self.assertEqual(len(templates), 1)
+        self.assertEqual(templates[0]['slug'], 'fb-slug')
+
+    def test_uses_marketplaceItem_fallback_key(self):
+        body = _rsc_item_key('mp-slug', key='"marketplaceItem":', id_='2')
+        with patch('framer_templates.http_get', return_value=body):
+            templates = ft.fetch_from_rsc()
+        self.assertEqual(len(templates), 1)
+        self.assertEqual(templates[0]['slug'], 'mp-slug')
+
+    def test_fallback_prefers_key_with_more_results(self):
+        # Primary key gives 1 item; "templateItem": gives 3 items; "marketplaceItem": gives 2.
+        # Fallback should pick "templateItem": as the winner.
+        primary_items = _rsc_item('prim', id_='0')
+        template_items = '\n'.join(
+            _rsc_item_key(f'ti-{i}', key='"templateItem":', id_=str(10 + i))
+            for i in range(3)
+        )
+        body = primary_items + '\n' + template_items + '\n' + '\n'.join(
+            _rsc_item_key(f'mi-{i}', key='"marketplaceItem":', id_=str(20 + i))
+            for i in range(2)
+        )
+        with patch('framer_templates.http_get', return_value=body):
+            templates = ft.fetch_from_rsc()
+        # Best fallback (templateItem) wins with 3 templates
+        self.assertEqual(len(templates), 3)
+        slugs = {t['slug'] for t in templates}
+        self.assertTrue(all(s.startswith('ti-') for s in slugs))
+
+    def test_primary_key_used_when_yields_five_or_more(self):
+        # Primary gives >= 5 results — fallback must NOT be attempted
+        body = '\n'.join(_rsc_item(f's-{i}', id_=str(i)) for i in range(5))
+        with patch('framer_templates.http_get', return_value=body), \
+             patch('framer_templates._parse_rsc_body', wraps=ft._parse_rsc_body) as mock_parse:
+            templates = ft.fetch_from_rsc()
+        self.assertEqual(len(templates), 5)
+        # _parse_rsc_body should only be called with the primary key
+        called_keys = [call[0][3] if len(call[0]) > 3 else call[1].get('search_key', ft._RSC_PRIMARY_KEY)
+                       for call in mock_parse.call_args_list]
+        self.assertTrue(all(k == ft._RSC_PRIMARY_KEY for k in called_keys))
+
+    def test_fallback_logs_warning_when_better_key_found(self):
+        import error_log as el
+        body = _rsc_item_key('fb-warn', key='"templateItem":', id_='5')
+        with patch('framer_templates.http_get', return_value=body), \
+             patch.object(el, 'log_error') as mock_log:
+            ft.fetch_from_rsc()
+        # Should log a warning about the primary key yielding too few results
+        fallback_calls = [
+            c for c in mock_log.call_args_list
+            if len(c[0]) >= 3 and 'fallback' in c[0][2].lower()
+        ]
+        self.assertTrue(fallback_calls, 'Expected a log_error call mentioning fallback key')
+
+    def test_no_fallback_log_when_primary_succeeds(self):
+        import error_log as el
+        body = '\n'.join(_rsc_item(f's-{i}', id_=str(i)) for i in range(5))
+        with patch('framer_templates.http_get', return_value=body), \
+             patch.object(el, 'log_error') as mock_log:
+            ft.fetch_from_rsc()
+        fallback_calls = [
+            c for c in mock_log.call_args_list
+            if len(c[0]) >= 3 and 'fallback' in c[0][2].lower()
+        ]
+        self.assertEqual(fallback_calls, [], 'No fallback log expected when primary key succeeds')
+
+    def test_fallback_still_warns_when_all_keys_yield_fewer_than_five(self):
+        # When all keys fail to find >= 5 templates, the standard low-count warning fires
+        body = _rsc_item('lone-item', id_='1')  # only 1 template under primary key
+        with patch('framer_templates.http_get', return_value=body), \
+             patch('builtins.print') as mock_print:
+            ft.fetch_from_rsc()
+        output = ' '.join(str(c) for c in mock_print.call_args_list)
+        self.assertIn('WARNING', output)
 
 
 # ---------------------------------------------------------------------------
