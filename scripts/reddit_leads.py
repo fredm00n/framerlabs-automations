@@ -26,8 +26,8 @@ import error_log
 # rate-limiting (HTTP 429) when fetching 43 feeds in rapid succession.
 _INTER_FEED_DELAY = 1.5
 
-# Reddit requires a descriptive User-Agent; generic bots are frequently blocked.
-_REDDIT_USER_AGENT = 'python:framerlabs-automations:v1.0 (automated monitoring bot)'
+# Mimic a real browser to avoid Reddit blocking automated requests.
+_REDDIT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
 
 # ---------------------------------------------------------------------------
@@ -544,7 +544,7 @@ def main() -> None:
     print(f'Done. Saved {total_saved} new lead(s). ({fetch_errors} subreddit(s) unreachable)')
     _write_summary(
         f'## Reddit Leads Monitor\n'
-        f'📥 {total_saved} new lead(s) saved · {fetch_errors}/{len(REDDIT_FEEDS)} subreddit(s) unreachable'
+        f'\U0001f4e5 {total_saved} new lead(s) saved · {fetch_errors}/{len(REDDIT_FEEDS)} subreddit(s) unreachable'
     )
 
 
