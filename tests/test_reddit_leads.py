@@ -668,6 +668,15 @@ class TestMarkNotified(unittest.TestCase):
 
 class TestMain(unittest.TestCase):
 
+    def setUp(self):
+        # Patch time.sleep for every test in this class so the inter-feed delay
+        # does not cause real waits during unit tests.
+        self._sleep_patcher = patch('scripts.reddit_leads.time.sleep')
+        self._sleep_patcher.start()
+
+    def tearDown(self):
+        self._sleep_patcher.stop()
+
     @patch.dict('os.environ', {
         'NOTION_TOKEN': 'ntn_test',
         'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
@@ -760,7 +769,13 @@ import scripts.reddit_leads as rl
 
 class TestWriteSummary(unittest.TestCase):
 
+    def setUp(self):
+        # Patch time.sleep so inter-feed delays don't slow down tests that call main().
+        self._sleep_patcher = patch('scripts.reddit_leads.time.sleep')
+        self._sleep_patcher.start()
+
     def tearDown(self):
+        self._sleep_patcher.stop()
         os.environ.pop('GITHUB_STEP_SUMMARY', None)
 
     def test_writes_to_file_when_env_set(self):
@@ -854,6 +869,51 @@ class TestWarnDiscord(unittest.TestCase):
         with patch('scripts.reddit_leads.http_post') as mock_post:
             rl._warn_discord('msg')  # must not raise
         mock_post.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# TestRateLimiting — inter-feed delay and User-Agent
+# ---------------------------------------------------------------------------
+
+class TestRateLimiting(unittest.TestCase):
+    """Tests for the inter-feed delay and Reddit-specific User-Agent."""
+
+    def test_inter_feed_delay_constant_positive(self):
+        """_INTER_FEED_DELAY must be a positive number."""
+        self.assertGreater(rl._INTER_FEED_DELAY, 0)
+
+    def test_reddit_user_agent_not_generic(self):
+        """_REDDIT_USER_AGENT must not be the generic 'automation-bot/1.0' string
+        that Reddit commonly blocks."""
+        self.assertNotEqual(rl._REDDIT_USER_AGENT, 'automation-bot/1.0')
+        self.assertTrue(len(rl._REDDIT_USER_AGENT) > 10)
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+    })
+    @patch('scripts.reddit_leads.time.sleep')
+    @patch('scripts.reddit_leads.fetch_reddit_posts', return_value=[])
+    def test_main_sleeps_between_feeds(self, mock_fetch, mock_sleep):
+        """main() must call time.sleep between feed fetches (not before the first)."""
+        from scripts.reddit_leads import main, REDDIT_FEEDS
+        main()
+        # sleep should be called once fewer than the number of feeds
+        expected_sleep_calls = len(REDDIT_FEEDS) - 1
+        self.assertEqual(mock_sleep.call_count, expected_sleep_calls)
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+    })
+    @patch('scripts.reddit_leads.time.sleep')
+    @patch('scripts.reddit_leads.fetch_reddit_posts', return_value=[])
+    def test_main_sleep_uses_inter_feed_delay(self, mock_fetch, mock_sleep):
+        """Each sleep call must use the _INTER_FEED_DELAY constant."""
+        from scripts.reddit_leads import main
+        main()
+        for call_args in mock_sleep.call_args_list:
+            self.assertEqual(call_args[0][0], rl._INTER_FEED_DELAY)
 
 
 if __name__ == '__main__':
