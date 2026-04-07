@@ -540,6 +540,16 @@ def main() -> None:
             'All subreddit feeds failed — possible network issue',
             {'feed_count': len(REDDIT_FEEDS)},
         )
+    elif fetch_errors > len(REDDIT_FEEDS) // 2:
+        _warn_discord(
+            f'WARNING: reddit_leads.py failed to fetch {fetch_errors}/{len(REDDIT_FEEDS)} subreddit feeds'
+            ' — possible partial network issue or Reddit rate-limiting. Check logs/errors.jsonl.'
+        )
+        error_log.log_error(
+            'reddit_leads', 'warning',
+            f'Majority of subreddit feeds failed ({fetch_errors}/{len(REDDIT_FEEDS)})',
+            {'fetch_errors': fetch_errors, 'feed_count': len(REDDIT_FEEDS)},
+        )
 
     print(f'Done. Saved {total_saved} new lead(s). ({fetch_errors} subreddit(s) unreachable)')
     _write_summary(
