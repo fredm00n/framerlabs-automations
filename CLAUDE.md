@@ -143,6 +143,8 @@ Post Date, Discovered, Review Notes, Notified (checkbox)
 - `python3 scripts/reddit_leads.py --update-status PAGE_ID STATUS NOTES` — approve/reject
 - `python3 scripts/reddit_leads.py --notify PAGE_ID` — send Discord embed + mark notified
 
+**Partial failure alerting:** If >50% of subreddit feeds fail to fetch (e.g. Reddit rate-limiting or a partial network issue), a warning is sent to `DISCORD_ALERTS_WEBHOOK_URL`. If all feeds fail, an error-level alert is sent instead.
+
 **Deferred improvements:**
 - Smarter dedup — currently one Notion API call per filtered post; could batch with OR filters
   once Notion supports them natively

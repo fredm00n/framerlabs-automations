@@ -742,6 +742,56 @@ class TestMain(unittest.TestCase):
     @patch.dict('os.environ', {
         'NOTION_TOKEN': 'ntn_test',
         'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+        'DISCORD_ALERTS_WEBHOOK_URL': 'https://discord.com/alerts',
+    })
+    @patch('scripts.reddit_leads._warn_discord')
+    @patch('scripts.reddit_leads.fetch_reddit_posts')
+    def test_warns_when_majority_of_fetches_fail(self, mock_fetch, mock_warn):
+        """A Discord alert must fire when >50% of feeds fail (but not all)."""
+        from scripts.reddit_leads import main, REDDIT_FEEDS
+        total = len(REDDIT_FEEDS)
+        # Return None for just over half the feeds, [] for the rest
+        majority_fail = total // 2 + 1
+        mock_fetch.side_effect = [None] * majority_fail + [[]] * (total - majority_fail)
+        main()
+        mock_warn.assert_called_once()
+        msg = mock_warn.call_args[0][0]
+        self.assertIn('partial', msg.lower())
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+    })
+    @patch('scripts.reddit_leads._warn_discord')
+    @patch('scripts.reddit_leads.fetch_reddit_posts')
+    def test_no_partial_warn_when_exactly_half_fail(self, mock_fetch, mock_warn):
+        """No partial-failure alert when exactly half of feeds fail (threshold is >50%)."""
+        from scripts.reddit_leads import main, REDDIT_FEEDS
+        total = len(REDDIT_FEEDS)
+        half = total // 2
+        mock_fetch.side_effect = [None] * half + [[]] * (total - half)
+        main()
+        mock_warn.assert_not_called()
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+        'DISCORD_ALERTS_WEBHOOK_URL': 'https://discord.com/alerts',
+    })
+    @patch('scripts.reddit_leads._warn_discord')
+    @patch('scripts.reddit_leads.fetch_reddit_posts', return_value=None)
+    def test_all_fail_triggers_error_not_partial_warn(self, mock_fetch, mock_warn):
+        """When all feeds fail, the all-fail branch fires (not the partial branch)."""
+        from scripts.reddit_leads import main
+        main()
+        mock_warn.assert_called_once()
+        msg = mock_warn.call_args[0][0]
+        # All-fail message must not say "partial"
+        self.assertNotIn('partial', msg.lower())
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
     })
     @patch('scripts.reddit_leads.save_lead_to_notion')
     @patch('scripts.reddit_leads.url_exists_in_notion', return_value=False)
