@@ -150,6 +150,10 @@ Post Date, Discovered, Review Notes, Notified (checkbox)
   once Notion supports them natively
 - Score/rank leads — could add a rough confidence score before saving to help the reviewer
   prioritise; skipped as Claude's reasoning handles prioritisation naturally
+- Shared utilities refactor — `load_dotenv`, `_retry`, `_should_retry`, `http_get`, `http_post`
+  are duplicated between `framer_templates.py` and `reddit_leads.py`; could be extracted to a
+  shared module, but intentional isolation keeps scripts independently runnable without import
+  dependencies; skipped to avoid a larger multi-file refactor with no immediate correctness benefit
 
 ---
 

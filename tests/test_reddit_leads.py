@@ -273,6 +273,30 @@ class TestPassesLightFilter(unittest.TestCase):
             'Need a website for my restaurant', 'Looking to hire a web designer', 'restaurateur'
         ))
 
+    def test_marketing_passes_framer_signal(self):
+        # 'framer' is a valid web signal for marketing/industry subreddits
+        self.assertTrue(passes_light_filter(
+            'Looking to hire a Framer designer', 'Need someone to build my site in Framer', 'marketing'
+        ))
+
+    def test_marketing_passes_figma_signal(self):
+        # 'figma' is a valid web signal for marketing/industry subreddits
+        self.assertTrue(passes_light_filter(
+            'Hiring a Figma to Framer developer', 'Looking to hire someone', 'digitalmarketing'
+        ))
+
+    def test_industry_passes_framer_signal(self):
+        # 'framer' should pass for industry subreddits (e.g. restaurateur)
+        self.assertTrue(passes_light_filter(
+            'Want to hire a Framer expert for my restaurant site', 'Looking for someone', 'restaurateur'
+        ))
+
+    def test_marketing_fails_without_web_or_framer_signal(self):
+        # No web/framer signal — should not pass
+        self.assertFalse(passes_light_filter(
+            'Looking to hire a content writer', 'Need someone to write blog posts', 'marketing'
+        ))
+
     # --- Always-exclude rules ---
 
     def test_always_exclude_feedback(self):

@@ -85,7 +85,7 @@ _BUSINESS_WEB = frozenset({
     'website', 'landing page', 'web design', 'web designer',
     'web developer', 'framer', 'figma',
 })
-_MARKETING_WEB = frozenset({'website', 'landing page', 'web design', 'web designer'})
+_MARKETING_WEB = frozenset({'website', 'landing page', 'web design', 'web designer', 'framer', 'figma'})
 
 # Posts matching these are almost always job seekers advertising, not clients
 _JOB_SEEKER_SIGNALS = frozenset({
@@ -305,7 +305,7 @@ def fetch_reddit_posts(subreddit: str, feed_url: str) -> list[dict] | None:
 
             title = _clean_html(title_el.text or '') if title_el is not None else ''
             link = link_el.get('href', '') if link_el is not None else ''
-            updated = updated_el.text or '' if updated_el is not None else ''
+            updated = (updated_el.text or '') if updated_el is not None else ''
             content = _clean_html(content_el.text or '') if content_el is not None else ''
 
             if title and link:
