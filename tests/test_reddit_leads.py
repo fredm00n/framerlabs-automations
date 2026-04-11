@@ -435,16 +435,16 @@ class TestSaveLeadToNotion(unittest.TestCase):
         self.assertEqual(props['Subreddit']['select']['name'], 'framer')
 
     @patch('scripts.reddit_leads.http_post')
-    def test_content_truncated_to_1000(self, mock_post):
+    def test_content_truncated_to_2000(self, mock_post):
         mock_post.return_value = {}
         lead = {
             'title': 'Test', 'url': 'https://reddit.com/1',
-            'subreddit': 'framer', 'content': 'x' * 2000, 'post_date': '',
+            'subreddit': 'framer', 'content': 'x' * 3000, 'post_date': '',
         }
         save_lead_to_notion(lead, 'db-id')
         props = mock_post.call_args[0][1]['properties']
         content_val = props['Content']['rich_text'][0]['text']['content']
-        self.assertEqual(len(content_val), 1000)
+        self.assertEqual(len(content_val), 2000)
 
     @patch('scripts.reddit_leads.http_post')
     def test_post_date_included_when_present(self, mock_post):

@@ -248,6 +248,41 @@ class TestFetchFromRsc(unittest.TestCase):
         ctx = low_count_calls[0][0][3]
         self.assertLessEqual(len(ctx['body_preview']), 500)
 
+    def test_error_log_includes_parse_errors_count_in_low_count_context(self):
+        """When < 5 templates parsed, the error log context must include parse_errors count."""
+        import error_log as el
+        body = _rsc_item('only-one')
+        with patch('framer_templates.http_get', return_value=body), \
+             patch.object(el, 'log_error') as mock_log:
+            ft.fetch_from_rsc()
+        low_count_calls = [
+            c for c in mock_log.call_args_list
+            if len(c[0]) >= 4 and isinstance(c[0][3], dict) and 'count' in c[0][3]
+        ]
+        self.assertTrue(low_count_calls, 'Expected at least one log_error call with count in context')
+        ctx = low_count_calls[0][0][3]
+        self.assertIn('parse_errors', ctx)
+        self.assertIsInstance(ctx['parse_errors'], int)
+
+    def test_parse_errors_nonzero_when_body_has_malformed_items(self):
+        """parse_errors in error log context reflects actual JSON parse failures in the stream."""
+        import error_log as el
+        # One valid item + one unclosed JSON object → parse_errors should be 1
+        good = _rsc_item('good-slug', id_='1')
+        bad = '"item":{"id":"2","slug":"bad-open"'  # unclosed JSON object
+        body = good + '\n' + bad
+        with patch('framer_templates.http_get', return_value=body), \
+             patch.object(el, 'log_error') as mock_log:
+            ft.fetch_from_rsc()
+        low_count_calls = [
+            c for c in mock_log.call_args_list
+            if len(c[0]) >= 4 and isinstance(c[0][3], dict) and 'count' in c[0][3]
+        ]
+        # Should have logged a low-count warning (only 1 valid template < 5)
+        self.assertTrue(low_count_calls)
+        ctx = low_count_calls[0][0][3]
+        self.assertGreaterEqual(ctx['parse_errors'], 1)
+
     def test_no_warning_with_five_or_more_templates(self):
         body = '\n'.join(_rsc_item(f'slug-{i}', id_=str(i)) for i in range(5))
         with patch('framer_templates.http_get', return_value=body), \
@@ -404,6 +439,42 @@ class TestParseRscBody(unittest.TestCase):
         seen: set = set()
         templates: list = []
         ft._parse_rsc_body(body, seen, templates)
+        self.assertEqual(len(templates), 1)
+
+    def test_returns_zero_parse_errors_on_clean_body(self):
+        body = _rsc_item('clean-slug', id_='1')
+        seen: set = set()
+        templates: list = []
+        errors = ft._parse_rsc_body(body, seen, templates)
+        self.assertEqual(errors, 0)
+
+    def test_returns_parse_error_count_for_unclosed_json(self):
+        # An unclosed JSON object after "item": should be counted as a parse error
+        body = '"item":{"id":"1","slug":"broken"'  # unclosed — ValueError from _extract_json_object
+        seen: set = set()
+        templates: list = []
+        errors = ft._parse_rsc_body(body, seen, templates)
+        self.assertEqual(errors, 1)
+        self.assertEqual(len(templates), 0)
+
+    def test_parse_errors_counted_across_multiple_bad_items(self):
+        # Two unclosed objects should yield two parse errors
+        bad = '"item":{"id":"1","slug":"bad1"'
+        body = bad + '\n' + bad.replace('"1"', '"2"').replace('"bad1"', '"bad2"')
+        seen: set = set()
+        templates: list = []
+        errors = ft._parse_rsc_body(body, seen, templates)
+        self.assertEqual(errors, 2)
+
+    def test_mixed_good_and_bad_items_counted_correctly(self):
+        # One good item and one unclosed object
+        good = _rsc_item('good-slug', id_='1')
+        bad = '"item":{"id":"2","slug":"bad"'  # unclosed
+        body = good + '\n' + bad
+        seen: set = set()
+        templates: list = []
+        errors = ft._parse_rsc_body(body, seen, templates)
+        self.assertEqual(errors, 1)
         self.assertEqual(len(templates), 1)
 
 

@@ -347,7 +347,7 @@ def save_lead_to_notion(lead: dict, db_id: str) -> None:
         'Name': {'title': [{'text': {'content': lead['title'][:2000]}}]},
         'URL': {'url': lead['url']},
         'Subreddit': {'select': {'name': lead['subreddit']}},
-        'Content': {'rich_text': [{'text': {'content': lead['content'][:1000]}}]},
+        'Content': {'rich_text': [{'text': {'content': lead['content'][:2000]}}]},
         'Status': {'select': {'name': 'pending'}},
         'Discovered': {'date': {'start': datetime.now().isoformat()}},
     }

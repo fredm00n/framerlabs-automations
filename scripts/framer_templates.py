@@ -130,6 +130,7 @@ def fetch_from_rsc() -> list[dict]:
     seen: set[str] = set()
     templates: list[dict] = []
     bodies: list[str] = []
+    total_parse_errors = 0
 
     for page in range(1, 3):
         print(f'Fetching Framer marketplace via RSC (page {page})...')
@@ -140,7 +141,7 @@ def fetch_from_rsc() -> list[dict]:
         bodies.append(body)
 
         count_before = len(templates)
-        _parse_rsc_body(body, seen, templates, _RSC_PRIMARY_KEY)
+        total_parse_errors += _parse_rsc_body(body, seen, templates, _RSC_PRIMARY_KEY)
         new_this_page = len(templates) - count_before
 
         if new_this_page < 20:
@@ -151,14 +152,17 @@ def fetch_from_rsc() -> list[dict]:
     if len(templates) < 5:
         best_key = _RSC_PRIMARY_KEY
         best_templates: list[dict] = templates
+        best_parse_errors = total_parse_errors
         for fallback_key in _RSC_FALLBACK_KEYS:
             candidate_seen: set[str] = set()
             candidate_templates: list[dict] = []
+            candidate_errors = 0
             for body in bodies:
-                _parse_rsc_body(body, candidate_seen, candidate_templates, fallback_key)
+                candidate_errors += _parse_rsc_body(body, candidate_seen, candidate_templates, fallback_key)
             if len(candidate_templates) > len(best_templates):
                 best_templates = candidate_templates
                 best_key = fallback_key
+                best_parse_errors = candidate_errors
         if best_key != _RSC_PRIMARY_KEY:
             print(f'Primary RSC key yielded {len(templates)} template(s); '
                   f'fallback key {best_key!r} yielded {len(best_templates)} — using fallback.')
@@ -170,6 +174,7 @@ def fetch_from_rsc() -> list[dict]:
                  'fallback_count': len(best_templates)},
             )
             templates = best_templates
+            total_parse_errors = best_parse_errors
 
     print(f'Parsed {len(templates)} templates from RSC.')
     if len(templates) < 5:
@@ -178,13 +183,14 @@ def fetch_from_rsc() -> list[dict]:
         error_log.log_error(
             'framer_templates', 'warning',
             f'Only {len(templates)} templates parsed from RSC — format may have changed',
-            {'count': len(templates), 'body_preview': last_body[:500]},
+            {'count': len(templates), 'parse_errors': total_parse_errors,
+             'body_preview': last_body[:500]},
         )
     return templates
 
 
 def _parse_rsc_body(body: str, seen: set, templates: list,
-                    search_key: str = '"item":') -> None:
+                    search_key: str = '"item":') -> int:
     """Parse template items from an RSC body, appending new ones to templates in-place.
 
     The RSC stream may emit ``"item":{"id":`` with or without whitespace between
@@ -196,9 +202,15 @@ def _parse_rsc_body(body: str, seen: set, templates: list,
     ``search_key`` defaults to ``'"item":'`` (the primary Framer RSC key) but
     callers may supply an alternative (e.g. ``'"templateItem":'``) to probe
     fallback keys when the primary yields too few results.
+
+    Returns the number of JSON parse failures (``ValueError`` from
+    ``_extract_json_object``).  A non-zero value indicates that the RSC stream
+    contained objects that looked like template items but could not be parsed —
+    useful for diagnosing format changes without flooding the error log.
     """
     search = search_key
     pos = 0
+    parse_errors = 0
     while True:
         idx = body.find(search, pos)
         if idx == -1:
@@ -241,9 +253,10 @@ def _parse_rsc_body(body: str, seen: set, templates: list,
                     'published_at': published_at,
                     'remixes': item.get('remixes') or 0,
                 })
-        except (ValueError, KeyError):
-            pass
+        except ValueError:
+            parse_errors += 1
         pos = idx + 1
+    return parse_errors
 
 
 def _extract_json_object(s: str, start: int) -> dict:
