@@ -469,6 +469,37 @@ class TestSaveLeadToNotion(unittest.TestCase):
         props = mock_post.call_args[0][1]['properties']
         self.assertNotIn('Post Date', props)
 
+    @patch('scripts.reddit_leads.http_post')
+    def test_discovered_timestamp_is_utc(self, mock_post):
+        """Discovered date must be a UTC-aware ISO 8601 timestamp (ends with +00:00)."""
+        mock_post.return_value = {}
+        lead = {
+            'title': 'Test', 'url': 'https://reddit.com/1',
+            'subreddit': 'framer', 'content': 'content', 'post_date': '',
+        }
+        save_lead_to_notion(lead, 'db-id')
+        props = mock_post.call_args[0][1]['properties']
+        discovered = props['Discovered']['date']['start']
+        self.assertTrue(
+            discovered.endswith('+00:00'),
+            f'Expected UTC timestamp ending in +00:00, got: {discovered!r}',
+        )
+
+    @patch('scripts.reddit_leads.http_post')
+    def test_discovered_timestamp_is_parseable_iso8601(self, mock_post):
+        """Discovered date must be a valid ISO 8601 datetime string."""
+        from datetime import datetime
+        mock_post.return_value = {}
+        lead = {
+            'title': 'Test', 'url': 'https://reddit.com/1',
+            'subreddit': 'framer', 'content': 'content', 'post_date': '',
+        }
+        save_lead_to_notion(lead, 'db-id')
+        props = mock_post.call_args[0][1]['properties']
+        discovered = props['Discovered']['date']['start']
+        dt = datetime.fromisoformat(discovered)
+        self.assertIsNotNone(dt.tzinfo, 'Discovered timestamp must be timezone-aware')
+
 
 # ---------------------------------------------------------------------------
 # TestGetPendingLeads
