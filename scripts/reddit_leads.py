@@ -19,7 +19,7 @@ import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timezone
 import error_log
 
 # Seconds to wait between individual subreddit RSS fetches to avoid Reddit
@@ -349,7 +349,7 @@ def save_lead_to_notion(lead: dict, db_id: str) -> None:
         'Subreddit': {'select': {'name': lead['subreddit']}},
         'Content': {'rich_text': [{'text': {'content': lead['content'][:2000]}}]},
         'Status': {'select': {'name': 'pending'}},
-        'Discovered': {'date': {'start': datetime.now().isoformat()}},
+        'Discovered': {'date': {'start': datetime.now(timezone.utc).isoformat()}},
     }
     if lead.get('post_date'):
         props['Post Date'] = {'date': {'start': lead['post_date']}}

@@ -14,7 +14,7 @@ import urllib.parse
 import urllib.request
 import urllib.error
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 import error_log
 
 
@@ -362,7 +362,7 @@ def save_to_notion(template: dict) -> None:
         'URL': {'url': template['url']},
         'Author': {'rich_text': [{'text': {'content': template.get('author', '')}}]},
         'Price': {'rich_text': [{'text': {'content': template.get('price', '')}}]},
-        'Discovered': {'date': {'start': datetime.now().isoformat()}},
+        'Discovered': {'date': {'start': datetime.now(timezone.utc).isoformat()}},
         'Category': {'select': {'name': infer_category(template)}},
     }
     if template.get('meta_title'):
@@ -443,12 +443,17 @@ def _build_summary_embed(templates: list[dict]) -> dict:
     lines: list[str] = []
     included = 0
     for category, items in grouped.items():
-        lines.append(f'**{category}**')
+        category_header = f'**{category}**'
+        lines.append(category_header)
         for t in items:
             author = t.get('author', 'unknown')
             price = t.get('price', '?')
             line = f"- [{t['title']}]({t['url']}) by {author} -- {price}"
             if len('\n'.join(lines + [line])) > 3900:
+                # If the category header was just added with no items under it yet,
+                # remove it to avoid an orphaned header above the "... and N more" line.
+                if lines and lines[-1] == category_header:
+                    lines.pop()
                 remaining = n - included
                 lines.append(f'... and {remaining} more')
                 break

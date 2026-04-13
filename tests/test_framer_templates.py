@@ -848,6 +848,28 @@ class TestSaveToNotion(unittest.TestCase):
         props = mock_post.call_args[0][1]['properties']
         self.assertEqual(props['Category']['select']['name'], 'Food & Dining')
 
+    def test_discovered_timestamp_is_utc(self):
+        """Discovered date must be a UTC-aware ISO 8601 timestamp (ends with +00:00)."""
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.save_to_notion(_BASE_TEMPLATE)
+        props = mock_post.call_args[0][1]['properties']
+        discovered = props['Discovered']['date']['start']
+        self.assertTrue(
+            discovered.endswith('+00:00'),
+            f'Expected UTC timestamp ending in +00:00, got: {discovered!r}',
+        )
+
+    def test_discovered_timestamp_is_parseable_iso8601(self):
+        """Discovered date must be a valid ISO 8601 datetime string."""
+        from datetime import datetime, timezone
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.save_to_notion(_BASE_TEMPLATE)
+        props = mock_post.call_args[0][1]['properties']
+        discovered = props['Discovered']['date']['start']
+        # fromisoformat should not raise
+        dt = datetime.fromisoformat(discovered)
+        self.assertIsNotNone(dt.tzinfo, 'Discovered timestamp must be timezone-aware')
+
 
 # ---------------------------------------------------------------------------
 # _build_embed
@@ -1000,6 +1022,33 @@ class TestBuildSummaryEmbed(unittest.TestCase):
         embed = ft._build_summary_embed(templates)
         self.assertLessEqual(len(embed['description']), 4096)
         self.assertIn('... and', embed['description'])
+
+    def test_no_orphaned_category_header_when_truncation_fires_on_first_category_item(self):
+        # Fill the description with Health & Fitness templates so that the very first
+        # SaaS & Tech item triggers truncation.  The SaaS & Tech header must NOT appear
+        # in the output because no items from that category were included.
+        # We need enough Health & Fitness content to be near 3900 chars.
+        # Each line is roughly ~80 chars; 50 items × 80 = ~4000 chars → truncation at ~48 items.
+        health_templates = [
+            _template(title=f'Fitness Studio Plan {i} Extra Long Name For Padding', slug=f'fit-{i}')
+            for i in range(50)
+        ]
+        saas_templates = [
+            _template(title='SaaS Dashboard Pro', slug='saas-1', meta_title='saas app')
+        ]
+        embed = ft._build_summary_embed(health_templates + saas_templates)
+        # If truncation fired before any SaaS item, the SaaS header should not appear
+        # alone (without any items) right before "... and N more".
+        lines = embed['description'].splitlines()
+        for i, line in enumerate(lines):
+            if '... and' in line and i > 0:
+                # The line before "... and N more" must not be a bare category header
+                # (i.e. a line starting with "**" and ending with "**" with no items below)
+                prev = lines[i - 1]
+                self.assertFalse(
+                    prev.startswith('**') and prev.endswith('**'),
+                    f'Orphaned category header before truncation line: {prev!r}',
+                )
 
 
 # ---------------------------------------------------------------------------

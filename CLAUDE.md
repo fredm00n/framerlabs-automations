@@ -104,6 +104,7 @@ Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort
 - Additional RSC search key variants — the script now automatically tries `"templateItem":` and `"marketplaceItem":` as fallbacks if the primary `"item":` key yields < 5 results, and uses whichever key produces the most templates. If Framer adopts a completely different key, the `body_preview` in the error log will reveal the new structure so a new fallback can be added
 - Richer HTTP error reporting — printing the response body on Notion API errors (4xx/5xx) would aid debugging; skipped as the existing error messages are sufficient for now
 - Category inference accuracy — keyword matching may miscategorise edge cases; an LLM-based approach could be added if accuracy becomes important. The inferred category is now persisted to Notion (as a `select` field) so miscategorisations are visible and correctable in the DB.
+- Additional `CATEGORY_KEYWORDS` entries (e.g. `event`, `wedding`, `fintech`) — could reduce "Other" categorisations; skipped as the keyword list is already broad and new entries would need data from real Framer Marketplace templates to validate accuracy.
 
 ---
 
@@ -154,6 +155,7 @@ Post Date, Discovered, Review Notes, Notified (checkbox)
   are duplicated between `framer_templates.py` and `reddit_leads.py`; could be extracted to a
   shared module, but intentional isolation keeps scripts independently runnable without import
   dependencies; skipped to avoid a larger multi-file refactor with no immediate correctness benefit
+- Expanded `_JOB_SEEKER_SIGNALS` — additional phrases like `"open to work"` could reduce false positives; skipped as Claude's Phase 2 review already filters these out reliably, and adding overly broad exclusions risks dropping genuine leads
 
 ---
 
