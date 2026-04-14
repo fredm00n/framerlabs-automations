@@ -141,14 +141,29 @@ _ATOM_FEED = """\
   <entry>
     <title>[HIRING] Framer developer needed for landing page</title>
     <link href="https://www.reddit.com/r/forhire/comments/abc123/hiring_framer/"/>
+    <published>2024-03-01T08:00:00+00:00</published>
     <updated>2024-03-01T10:00:00+00:00</updated>
     <content type="html">&lt;p&gt;Looking for a Framer developer. Budget $500.&lt;/p&gt;</content>
   </entry>
   <entry>
     <title>No title entry</title>
     <link href="https://www.reddit.com/r/forhire/comments/def456/no_title/"/>
+    <published>2024-03-01T07:00:00+00:00</published>
     <updated>2024-03-01T09:00:00+00:00</updated>
     <content type="html">&lt;p&gt;Some content here.&lt;/p&gt;</content>
+  </entry>
+</feed>"""
+
+# Feed where entries have only <updated> and no <published> element
+_ATOM_FEED_UPDATED_ONLY = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>r/forhire</title>
+  <entry>
+    <title>[HIRING] Framer dev needed</title>
+    <link href="https://www.reddit.com/r/forhire/comments/xyz789/hiring_framer/"/>
+    <updated>2024-04-01T12:00:00+00:00</updated>
+    <content type="html">&lt;p&gt;Need a Framer dev.&lt;/p&gt;</content>
   </entry>
 </feed>"""
 
@@ -342,6 +357,22 @@ class TestFetchRedditPosts(unittest.TestCase):
         self.assertEqual(posts[0]['url'], 'https://www.reddit.com/r/forhire/comments/abc123/hiring_framer/')
         self.assertEqual(posts[0]['subreddit'], 'forhire')
         self.assertIn('Framer developer', posts[0]['content'])
+
+    @patch('scripts.reddit_leads.http_get')
+    def test_post_date_uses_published_when_available(self, mock_get):
+        # When both <published> and <updated> are present, post_date should be
+        # the <published> value (original creation time), not <updated>.
+        mock_get.return_value = _ATOM_FEED
+        posts = fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss')
+        self.assertEqual(posts[0]['post_date'], '2024-03-01T08:00:00+00:00')
+
+    @patch('scripts.reddit_leads.http_get')
+    def test_post_date_falls_back_to_updated_when_no_published(self, mock_get):
+        # When only <updated> is present (no <published>), post_date should
+        # fall back to the <updated> value so we always capture a timestamp.
+        mock_get.return_value = _ATOM_FEED_UPDATED_ONLY
+        posts = fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss')
+        self.assertEqual(posts[0]['post_date'], '2024-04-01T12:00:00+00:00')
 
     @patch('scripts.reddit_leads.http_get')
     def test_html_stripped_from_content(self, mock_get):

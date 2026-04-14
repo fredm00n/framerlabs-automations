@@ -300,19 +300,24 @@ def fetch_reddit_posts(subreddit: str, feed_url: str) -> list[dict] | None:
         for entry in root.findall('atom:entry', _ATOM_NS):
             title_el = entry.find('atom:title', _ATOM_NS)
             link_el = entry.find('atom:link', _ATOM_NS)
+            published_el = entry.find('atom:published', _ATOM_NS)
             updated_el = entry.find('atom:updated', _ATOM_NS)
             content_el = entry.find('atom:content', _ATOM_NS)
 
             title = _clean_html(title_el.text or '') if title_el is not None else ''
             link = link_el.get('href', '') if link_el is not None else ''
+            # Prefer <published> (original post creation time) over <updated>
+            # (which reflects the last comment or edit time and can be much later).
+            published = (published_el.text or '') if published_el is not None else ''
             updated = (updated_el.text or '') if updated_el is not None else ''
+            post_date = published or updated
             content = _clean_html(content_el.text or '') if content_el is not None else ''
 
             if title and link:
                 posts.append({
                     'title': title,
                     'url': link,
-                    'post_date': updated,
+                    'post_date': post_date,
                     'content': content,
                     'subreddit': subreddit,
                 })
