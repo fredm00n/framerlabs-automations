@@ -22,11 +22,28 @@ Before implementing anything, use the GitHub MCP tools to list all open PRs in
 you're considering (even partially or under a different name), skip that
 improvement entirely and exit cleanly. Do not open duplicate PRs.
 
+## Git and GitHub workflow
+
+Use **native git commands** for all branch, commit, and push operations — never use
+`mcp__github__create_branch` or `mcp__github__push_files`. Those tools embed full file
+contents in a single API call and cause stream idle timeouts on files larger than ~30 KB.
+
+```bash
+git checkout -b claude/improve-<script>-<short-description>
+git add <files>
+git commit -m "<message>"
+git push -u origin claude/improve-<script>-<short-description>
+```
+
+Use GitHub MCP tools **only** for:
+- **Step 2**: `mcp__github__list_pull_requests` — check for existing open PRs
+- **Step 3, final sub-step**: `mcp__github__create_pull_request` — open a PR after pushing
+
 ## Step 3 — Implement if worthwhile
 
 If you find a clear, self-contained improvement with no existing open PR covering it:
 
-1. Create a branch: `claude/improve-<script>-<short-description>`
+1. Create a branch: `git checkout -b claude/improve-<script>-<short-description>`
 2. Implement the change
 3. If the change adds new Notion-tracked fields, update the Notion DB schema via MCP (`notion-update-data-source`) before committing
 4. Update or add tests in `tests/` for any modified or new functions (see Testing rules in CLAUDE.md)
