@@ -731,6 +731,25 @@ class TestNotifyDiscordLead(unittest.TestCase):
         # Should not raise
         notify_discord_lead(lead)
 
+    @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
+    @patch('scripts.reddit_leads.http_post', side_effect=Exception('webhook down'))
+    def test_error_log_includes_url_and_subreddit_on_failure(self, mock_post):
+        """When Discord notification fails, the error log context must include url and subreddit."""
+        import error_log as el
+        lead = {
+            'title': 'Hiring Framer dev',
+            'url': 'https://reddit.com/r/forhire/abc',
+            'subreddit': 'forhire',
+            'content': 'Need a developer',
+        }
+        with patch.object(el, 'log_error') as mock_log:
+            notify_discord_lead(lead)
+        self.assertTrue(mock_log.called)
+        ctx = mock_log.call_args[0][3]
+        self.assertEqual(ctx.get('url'), 'https://reddit.com/r/forhire/abc')
+        self.assertEqual(ctx.get('subreddit'), 'forhire')
+        self.assertIn('error', ctx)
+
 
 # ---------------------------------------------------------------------------
 # TestMarkNotified

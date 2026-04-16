@@ -466,7 +466,7 @@ def notify_discord_lead(lead: dict) -> None:
         error_log.log_error(
             'reddit_leads', 'warning',
             f'Discord notification failed for "{lead["title"]}"',
-            {'error': str(e)},
+            {'error': str(e), 'url': lead.get('url', ''), 'subreddit': lead.get('subreddit', '')},
         )
 
 
