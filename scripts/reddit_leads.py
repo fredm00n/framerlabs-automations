@@ -346,6 +346,20 @@ def url_exists_in_notion(url: str, db_id: str) -> bool:
     return len(data.get('results', [])) > 0
 
 
+def _is_valid_iso8601_date(value: str) -> bool:
+    """Return True if *value* is a non-empty string that Python can parse as an
+    ISO 8601 datetime.  Notion's date API field requires a valid ISO 8601 string;
+    a malformed value causes an HTTP 400 that will recur on every subsequent run
+    because the page is never created and dedup never triggers."""
+    if not value:
+        return False
+    try:
+        datetime.fromisoformat(value)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
 def save_lead_to_notion(lead: dict, db_id: str) -> None:
     """Save a new lead to Notion with status 'pending'."""
     props: dict = {
@@ -356,8 +370,17 @@ def save_lead_to_notion(lead: dict, db_id: str) -> None:
         'Status': {'select': {'name': 'pending'}},
         'Discovered': {'date': {'start': datetime.now(timezone.utc).isoformat()}},
     }
-    if lead.get('post_date'):
-        props['Post Date'] = {'date': {'start': lead['post_date']}}
+    post_date = lead.get('post_date', '')
+    if _is_valid_iso8601_date(post_date):
+        props['Post Date'] = {'date': {'start': post_date}}
+    elif post_date:
+        # Date present but unparseable — log a warning and omit the field so
+        # the lead is still saved rather than causing a recurring Notion 400.
+        error_log.log_error(
+            'reddit_leads', 'warning',
+            'Skipping invalid post_date for lead',
+            {'url': lead.get('url', ''), 'post_date': post_date},
+        )
     http_post(
         'https://api.notion.com/v1/pages',
         {'parent': {'database_id': db_id}, 'properties': props},
@@ -527,6 +550,18 @@ def main() -> None:
                 save_lead_to_notion(post, db_id)
                 total_saved += 1
                 print(f'Saved: [r/{subreddit}] {post["title"]}')
+            except urllib.error.HTTPError as e:
+                body_preview = ''
+                try:
+                    body_preview = e.read().decode('utf-8', errors='replace')[:500]
+                except Exception:
+                    pass
+                print(f'Error saving lead from r/{subreddit}: {e}')
+                error_log.log_error(
+                    'reddit_leads', 'error',
+                    f'Error saving lead from r/{subreddit}',
+                    {'url': post['url'], 'error': str(e), 'notion_response': body_preview},
+                )
             except Exception as e:
                 print(f'Error saving lead from r/{subreddit}: {e}')
                 error_log.log_error(

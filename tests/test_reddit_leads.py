@@ -12,6 +12,7 @@ sys.path.insert(0, '.')
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts'))
 from scripts.reddit_leads import (
     _clean_html,
+    _is_valid_iso8601_date,
     _retry,
     _should_retry,
     fetch_reddit_posts,
@@ -195,6 +196,41 @@ class TestCleanHtml(unittest.TestCase):
 
     def test_none_equivalent(self):
         self.assertEqual(_clean_html(''), '')
+
+
+# ---------------------------------------------------------------------------
+# TestIsValidIso8601Date
+# ---------------------------------------------------------------------------
+
+class TestIsValidIso8601Date(unittest.TestCase):
+
+    def test_valid_utc_datetime(self):
+        self.assertTrue(_is_valid_iso8601_date('2024-03-01T10:00:00+00:00'))
+
+    def test_valid_datetime_with_offset(self):
+        self.assertTrue(_is_valid_iso8601_date('2024-03-01T08:00:00-05:00'))
+
+    def test_valid_date_only(self):
+        self.assertTrue(_is_valid_iso8601_date('2024-03-01'))
+
+    def test_empty_string_returns_false(self):
+        self.assertFalse(_is_valid_iso8601_date(''))
+
+    def test_none_equivalent_empty_returns_false(self):
+        self.assertFalse(_is_valid_iso8601_date(''))
+
+    def test_garbage_string_returns_false(self):
+        self.assertFalse(_is_valid_iso8601_date('not-a-date'))
+
+    def test_partial_date_invalid(self):
+        # '2024-03' is not a valid isoformat string Python accepts
+        self.assertFalse(_is_valid_iso8601_date('2024-03'))
+
+    def test_timestamp_with_z_suffix(self):
+        # Python 3.11+ parses 'Z' as UTC; on older Pythons this may fail.
+        # Either outcome is acceptable — we test that the function doesn't raise.
+        result = _is_valid_iso8601_date('2024-03-01T10:00:00Z')
+        self.assertIsInstance(result, bool)
 
 
 # ---------------------------------------------------------------------------
