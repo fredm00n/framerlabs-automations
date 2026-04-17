@@ -156,6 +156,7 @@ Post Date, Discovered, Review Notes, Notified (checkbox)
   shared module, but intentional isolation keeps scripts independently runnable without import
   dependencies; skipped to avoid a larger multi-file refactor with no immediate correctness benefit
 - Expanded `_JOB_SEEKER_SIGNALS` — additional phrases like `"open to work"` could reduce false positives; skipped as Claude's Phase 2 review already filters these out reliably, and adding overly broad exclusions risks dropping genuine leads
+- Persistent 400 tracking across runs — if Notion returns a 400 for a reason other than an invalid `post_date` (e.g. a title or content field that triggers an undocumented Notion limit), the script will retry the same URL every 15 min until the post ages out of the RSS feed; a "failed" sentinel page could be written to Notion to make dedup catch it, but this adds complexity for a rare edge case; the `_is_valid_iso8601_date` guard now eliminates the known cause of recurring 400s
 
 ---
 
