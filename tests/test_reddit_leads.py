@@ -21,6 +21,7 @@ from scripts.reddit_leads import (
     mark_notified,
     notify_discord_lead,
     passes_light_filter,
+    save_failed_sentinel_to_notion,
     save_lead_to_notion,
     update_lead_status,
     url_exists_in_notion,
@@ -569,6 +570,59 @@ class TestSaveLeadToNotion(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# TestSaveFailedSentinelToNotion
+# ---------------------------------------------------------------------------
+
+class TestSaveFailedSentinelToNotion(unittest.TestCase):
+
+    @patch('scripts.reddit_leads.http_post')
+    def test_writes_sentinel_page_with_failed_status(self, mock_post):
+        mock_post.return_value = {}
+        lead = {'url': 'https://reddit.com/r/forhire/1', 'title': 'Bad lead'}
+        save_failed_sentinel_to_notion(lead, 'db-id')
+        mock_post.assert_called_once()
+        props = mock_post.call_args[0][1]['properties']
+        self.assertEqual(props['Status']['select']['name'], 'failed')
+
+    @patch('scripts.reddit_leads.http_post')
+    def test_stores_url_in_sentinel(self, mock_post):
+        mock_post.return_value = {}
+        lead = {'url': 'https://reddit.com/r/forhire/2', 'title': 'Bad lead'}
+        save_failed_sentinel_to_notion(lead, 'db-id')
+        props = mock_post.call_args[0][1]['properties']
+        self.assertEqual(props['URL']['url'], 'https://reddit.com/r/forhire/2')
+
+    @patch('scripts.reddit_leads.http_post')
+    def test_sentinel_name_is_placeholder(self, mock_post):
+        """Sentinel must not use lead title (which may have triggered the 400)."""
+        mock_post.return_value = {}
+        lead = {'url': 'https://reddit.com/r/forhire/3', 'title': 'Problematic title \u0000'}
+        save_failed_sentinel_to_notion(lead, 'db-id')
+        props = mock_post.call_args[0][1]['properties']
+        name = props['Name']['title'][0]['text']['content']
+        self.assertEqual(name, '[save-failed sentinel]')
+
+    @patch('scripts.reddit_leads.http_post', side_effect=Exception('Notion down'))
+    def test_swallows_exception_when_sentinel_write_fails(self, mock_post):
+        """If writing the sentinel itself fails, no exception must propagate."""
+        lead = {'url': 'https://reddit.com/r/forhire/4', 'title': 'Test'}
+        # Should not raise
+        save_failed_sentinel_to_notion(lead, 'db-id')
+
+    @patch('scripts.reddit_leads.http_post', side_effect=Exception('Notion down'))
+    def test_logs_error_when_sentinel_write_fails(self, mock_post):
+        """If writing the sentinel itself fails, it must be logged."""
+        import error_log as el
+        lead = {'url': 'https://reddit.com/r/forhire/5', 'title': 'Test'}
+        with patch.object(el, 'log_error') as mock_log:
+            save_failed_sentinel_to_notion(lead, 'db-id')
+        self.assertTrue(mock_log.called)
+        ctx = mock_log.call_args[0][3]
+        self.assertEqual(ctx.get('url'), 'https://reddit.com/r/forhire/5')
+        self.assertIn('error', ctx)
+
+
+# ---------------------------------------------------------------------------
 # TestGetPendingLeads
 # ---------------------------------------------------------------------------
 
@@ -879,6 +933,53 @@ class TestMain(unittest.TestCase):
         from scripts.reddit_leads import main
         main()
         mock_warn.assert_not_called()
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+    })
+    @patch('scripts.reddit_leads.save_failed_sentinel_to_notion')
+    @patch('scripts.reddit_leads.save_lead_to_notion',
+           side_effect=urllib.error.HTTPError(None, 400, 'Bad Request', {}, None))
+    @patch('scripts.reddit_leads.url_exists_in_notion', return_value=False)
+    @patch('scripts.reddit_leads.fetch_reddit_posts')
+    def test_writes_sentinel_on_400_save_failure(self, mock_fetch, mock_exists, mock_save, mock_sentinel):
+        """When save_lead_to_notion raises a 400, a sentinel page must be written."""
+        mock_fetch.return_value = [{
+            'title': '[HIRING] Need a Framer developer',
+            'url': 'https://reddit.com/r/forhire/1',
+            'subreddit': 'forhire',
+            'content': 'Budget $500 for landing page website',
+            'post_date': '2024-03-01T10:00:00+00:00',
+        }]
+        from scripts.reddit_leads import main
+        main()
+        # The mock returns the same post for every subreddit, so the sentinel
+        # may be called multiple times (once per subreddit that passes the light
+        # filter and gets a 400).  We assert it was called at least once.
+        mock_sentinel.assert_called()
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+    })
+    @patch('scripts.reddit_leads.save_failed_sentinel_to_notion')
+    @patch('scripts.reddit_leads.save_lead_to_notion',
+           side_effect=urllib.error.HTTPError(None, 500, 'Server Error', {}, None))
+    @patch('scripts.reddit_leads.url_exists_in_notion', return_value=False)
+    @patch('scripts.reddit_leads.fetch_reddit_posts')
+    def test_does_not_write_sentinel_on_retriable_save_failure(self, mock_fetch, mock_exists, mock_save, mock_sentinel):
+        """When save_lead_to_notion raises a retriable 500 error, no sentinel must be written."""
+        mock_fetch.return_value = [{
+            'title': '[HIRING] Need a Framer developer',
+            'url': 'https://reddit.com/r/forhire/1',
+            'subreddit': 'forhire',
+            'content': 'Budget $500 for landing page website',
+            'post_date': '2024-03-01T10:00:00+00:00',
+        }]
+        from scripts.reddit_leads import main
+        main()
+        mock_sentinel.assert_not_called()
 
     @patch.dict('os.environ', {
         'NOTION_TOKEN': 'ntn_test',
