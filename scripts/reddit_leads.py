@@ -388,6 +388,38 @@ def save_lead_to_notion(lead: dict, db_id: str) -> None:
     )
 
 
+def save_failed_sentinel_to_notion(lead: dict, db_id: str) -> None:
+    """Write a minimal 'failed' sentinel page to Notion so future dedup checks skip this URL.
+
+    Called after a non-retriable save error (e.g. HTTP 400) to prevent the same
+    URL from being re-attempted on every subsequent run while it remains in the
+    RSS feed.  The sentinel only stores the URL and a 'failed' status — no title
+    or content that might have triggered the original error.
+    """
+    try:
+        http_post(
+            'https://api.notion.com/v1/pages',
+            {
+                'parent': {'database_id': db_id},
+                'properties': {
+                    'Name': {'title': [{'text': {'content': '[save-failed sentinel]'}}]},
+                    'URL': {'url': lead['url']},
+                    'Status': {'select': {'name': 'failed'}},
+                    'Discovered': {'date': {'start': datetime.now(timezone.utc).isoformat()}},
+                },
+            },
+            headers=notion_headers(),
+        )
+    except Exception as sentinel_exc:
+        # If writing the sentinel also fails, log but don't raise — the original
+        # error is what matters and has already been logged by the caller.
+        error_log.log_error(
+            'reddit_leads', 'warning',
+            'Failed to write save-failed sentinel to Notion',
+            {'url': lead.get('url', ''), 'error': str(sentinel_exc)},
+        )
+
+
 def get_pending_leads(db_id: str) -> list[dict]:
     """Return all leads with Status = 'pending' from Notion."""
     leads = []
@@ -562,6 +594,11 @@ def main() -> None:
                     f'Error saving lead from r/{subreddit}',
                     {'url': post['url'], 'error': str(e), 'notion_response': body_preview},
                 )
+                # For non-retriable errors (e.g. 400 Bad Request), write a
+                # sentinel page so the dedup check blocks future retries of the
+                # same URL while it remains in the RSS feed.
+                if not _should_retry(e):
+                    save_failed_sentinel_to_notion(post, db_id)
             except Exception as e:
                 print(f'Error saving lead from r/{subreddit}: {e}')
                 error_log.log_error(
