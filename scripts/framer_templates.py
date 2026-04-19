@@ -685,6 +685,19 @@ def main() -> None:
         try:
             save_to_notion(template)
             saved_templates.append(template)
+        except urllib.error.HTTPError as e:
+            notion_response = ''
+            try:
+                notion_response = e.read().decode('utf-8', errors='replace')[:500]
+            except Exception:
+                pass
+            print(f'Failed to save "{template["title"]}" to Notion: {e}')
+            error_log.log_error(
+                'framer_templates', 'error',
+                f'Failed to save "{template["title"]}" to Notion',
+                {'slug': template['slug'], 'error': str(e), 'notion_response': notion_response},
+            )
+            continue
         except Exception as e:
             print(f'Failed to save "{template["title"]}" to Notion: {e}')
             error_log.log_error(
