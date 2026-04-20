@@ -576,9 +576,23 @@ def main() -> None:
         for post in posts:
             if not passes_light_filter(post['title'], post['content'], subreddit):
                 continue
+            # Dedup check is kept in its own try/except so that a transient
+            # Notion API failure here does not (a) log a misleading "Error
+            # saving lead" message, or (b) incorrectly write a failed-sentinel
+            # that permanently blacklists the URL before any save was even
+            # attempted.
             try:
                 if url_exists_in_notion(post['url'], db_id):
                     continue
+            except Exception as e:
+                print(f'Error checking dedup for r/{subreddit}: {e}')
+                error_log.log_error(
+                    'reddit_leads', 'warning',
+                    f'Dedup check failed for r/{subreddit} — skipping post',
+                    {'url': post['url'], 'error': str(e)},
+                )
+                continue  # skip this post; do not attempt to save or write sentinel
+            try:
                 save_lead_to_notion(post, db_id)
                 total_saved += 1
                 print(f'Saved: [r/{subreddit}] {post["title"]}')

@@ -1050,6 +1050,63 @@ class TestMain(unittest.TestCase):
         main()
         mock_save.assert_not_called()
 
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+    })
+    @patch('scripts.reddit_leads.save_failed_sentinel_to_notion')
+    @patch('scripts.reddit_leads.save_lead_to_notion')
+    @patch('scripts.reddit_leads.url_exists_in_notion',
+           side_effect=Exception('Notion connection error'))
+    @patch('scripts.reddit_leads.fetch_reddit_posts')
+    def test_dedup_error_skips_post_without_sentinel(self, mock_fetch, mock_exists, mock_save, mock_sentinel):
+        """When url_exists_in_notion raises, the post must be skipped and no sentinel written."""
+        mock_fetch.return_value = [{
+            'title': '[HIRING] Need a Framer developer',
+            'url': 'https://reddit.com/r/forhire/1',
+            'subreddit': 'forhire',
+            'content': 'Budget $500 for landing page website',
+            'post_date': '2024-03-01T10:00:00+00:00',
+        }]
+        from scripts.reddit_leads import main
+        main()
+        mock_save.assert_not_called()
+        mock_sentinel.assert_not_called()
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+    })
+    @patch('scripts.reddit_leads.save_failed_sentinel_to_notion')
+    @patch('scripts.reddit_leads.save_lead_to_notion')
+    @patch('scripts.reddit_leads.url_exists_in_notion',
+           side_effect=Exception('Notion connection error'))
+    @patch('scripts.reddit_leads.fetch_reddit_posts')
+    def test_dedup_error_logs_warning_not_error(self, mock_fetch, mock_exists, mock_save, mock_sentinel):
+        """A dedup-check failure must be logged as 'warning', not 'error', and include the URL."""
+        import error_log as el
+        mock_fetch.return_value = [{
+            'title': '[HIRING] Need a Framer developer',
+            'url': 'https://reddit.com/r/forhire/dedup-fail',
+            'subreddit': 'forhire',
+            'content': 'Budget $500 for landing page website',
+            'post_date': '2024-03-01T10:00:00+00:00',
+        }]
+        with patch.object(el, 'log_error') as mock_log:
+            from scripts.reddit_leads import main
+            main()
+        # At least one log_error call must be for the dedup failure
+        dedup_calls = [
+            c for c in mock_log.call_args_list
+            if 'dedup' in (c[0][2] if len(c[0]) > 2 else '').lower()
+        ]
+        self.assertTrue(len(dedup_calls) >= 1, 'Expected at least one dedup warning log entry')
+        severity = dedup_calls[0][0][1]
+        self.assertEqual(severity, 'warning')
+        ctx = dedup_calls[0][0][3]
+        self.assertIn('url', ctx)
+        self.assertIn('https://reddit.com/r/forhire/dedup-fail', ctx['url'])
+
 
 # ---------------------------------------------------------------------------
 # _write_summary
