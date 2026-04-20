@@ -1239,6 +1239,48 @@ class TestMain(unittest.TestCase):
             ft.main()  # must not raise
         self.assertEqual(save_mock.call_count, 2)
 
+    def test_http_error_on_save_logs_notion_response_body(self):
+        """When save_to_notion raises an HTTPError, notion_response must appear in the error log."""
+        import error_log as el
+        import io
+        http_err = urllib.error.HTTPError(
+            None, 400, 'Bad Request', {},
+            io.BytesIO(b'{"object":"error","message":"Invalid property"}'),
+        )
+        save_mock = MagicMock(side_effect=http_err)
+        with patch('framer_templates.fetch_framer_templates', return_value=[_TEMPLATES[0]]), \
+             patch('framer_templates.get_seen_slugs', return_value=set()), \
+             patch('framer_templates.save_to_notion', save_mock), \
+             patch('framer_templates.notify_discord_batch'), \
+             patch('framer_templates.post_to_x'), \
+             patch('framer_templates._warn_discord'), \
+             patch.object(el, 'log_error') as mock_log, \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            ft.main()
+        http_error_calls = [
+            c for c in mock_log.call_args_list
+            if len(c[0]) >= 4 and isinstance(c[0][3], dict) and 'notion_response' in c[0][3]
+        ]
+        self.assertTrue(http_error_calls, 'Expected log_error call with notion_response in context')
+        ctx = http_error_calls[0][0][3]
+        self.assertIn('Invalid property', ctx['notion_response'])
+
+    def test_http_error_on_save_continues_to_next_template(self):
+        """An HTTPError saving one template must not abort processing the remaining templates."""
+        import io
+        http_err = urllib.error.HTTPError(None, 400, 'Bad Request', {}, io.BytesIO(b'{}'))
+        save_mock = MagicMock(side_effect=[http_err, None])
+        notify_mock = MagicMock()
+        with patch('framer_templates.fetch_framer_templates', return_value=_TEMPLATES), \
+             patch('framer_templates.get_seen_slugs', return_value=set()), \
+             patch('framer_templates.save_to_notion', save_mock), \
+             patch('framer_templates.notify_discord_batch', notify_mock), \
+             patch('framer_templates.post_to_x'), \
+             patch('framer_templates._warn_discord'), \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            ft.main()  # must not raise
+        self.assertEqual(save_mock.call_count, 2)
+
     def test_warns_discord_when_fewer_than_five_templates(self):
         few = _TEMPLATES[:2]  # 2 templates < 5
         with patch('framer_templates.fetch_framer_templates', return_value=few), \
