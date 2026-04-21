@@ -117,6 +117,54 @@ _RSC_PRIMARY_KEY = '"item":'
 _RSC_FALLBACK_KEYS = ('"templateItem":', '"marketplaceItem":')
 
 
+def _find_candidate_rsc_keys(body: str, max_results: int = 5) -> list[str]:
+    """Scan an RSC body for JSON key names that precede objects containing both
+    ``"id":`` and ``"slug":`` fields.
+
+    Used as a last-resort diagnostic when all known RSC keys produce zero results
+    and zero parse errors — meaning the response format changed to use an entirely
+    new key name.  Returns up to *max_results* unique candidate key strings
+    (e.g. ``['"templateData":', '"listingItem":']``) that can be added as new
+    fallback keys, or an empty list when no candidates are found.
+    """
+    candidates: list[str] = []
+    seen_keys: set[str] = set()
+    # Find every JSON object start in the body and look back for a quoted key
+    pos = 0
+    while pos < len(body):
+        brace = body.find('{', pos)
+        if brace == -1:
+            break
+        # Quick pre-check: skip objects that obviously don't have both id and slug
+        chunk = body[brace:brace + 300]
+        if '"id":' not in chunk or '"slug":' not in chunk:
+            pos = brace + 1
+            continue
+        # Try to parse the object to confirm it has both fields
+        try:
+            obj = _extract_json_object(body, brace)
+        except ValueError:
+            pos = brace + 1
+            continue
+        if 'id' not in obj or not obj.get('slug'):
+            pos = brace + 1
+            continue
+        # Walk backwards from brace to find the quoted key preceding it
+        # Pattern: "someKey": { or "someKey":{
+        look_back = body[max(0, brace - 60):brace]
+        # Find the last JSON string followed by an optional colon + optional whitespace
+        key_match = re.search(r'"([^"\\]{1,40})"\s*:\s*$', look_back)
+        if key_match:
+            key_str = f'"{key_match.group(1)}":'
+            if key_str not in seen_keys:
+                seen_keys.add(key_str)
+                candidates.append(key_str)
+                if len(candidates) >= max_results:
+                    break
+        pos = brace + 1
+    return candidates
+
+
 def fetch_from_rsc() -> list[dict]:
     # Framer uses Next.js RSC (React Server Components). Fetching the marketplace
     # URL with Rsc: 1 header returns a structured component stream that includes
@@ -180,11 +228,24 @@ def fetch_from_rsc() -> list[dict]:
     if len(templates) < 5:
         print(f'WARNING: only {len(templates)} templates parsed — RSC output may be incomplete.')
         last_body = bodies[-1] if bodies else ''
+        ctx: dict = {
+            'count': len(templates),
+            'parse_errors': total_parse_errors,
+            'body_preview': last_body[:500],
+        }
+        # When no known key matched AND no parse errors occurred, the RSC format
+        # has likely changed to use a completely new key.  Scan the body for JSON
+        # objects that contain both "id": and "slug": fields and log the key
+        # prefixes immediately before them — this reveals the new key name so a
+        # fallback entry can be added without manually inspecting raw RSC output.
+        if len(templates) == 0 and total_parse_errors == 0:
+            candidate_keys = _find_candidate_rsc_keys(last_body)
+            if candidate_keys:
+                ctx['candidate_keys'] = candidate_keys
         error_log.log_error(
             'framer_templates', 'warning',
             f'Only {len(templates)} templates parsed from RSC — format may have changed',
-            {'count': len(templates), 'parse_errors': total_parse_errors,
-             'body_preview': last_body[:500]},
+            ctx,
         )
     return templates
 
