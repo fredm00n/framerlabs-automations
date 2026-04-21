@@ -567,6 +567,130 @@ class TestFetchFromRscFallback(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# _find_candidate_rsc_keys
+# ---------------------------------------------------------------------------
+
+class TestFindCandidateRscKeys(unittest.TestCase):
+
+    def test_finds_key_before_object_with_id_and_slug(self):
+        # A JSON object with both "id": and "slug": preceded by a quoted key
+        body = '"newKey":{"id":"1","slug":"my-template","title":"T"}'
+        candidates = ft._find_candidate_rsc_keys(body)
+        self.assertIn('"newKey":', candidates)
+
+    def test_returns_empty_list_when_no_candidates(self):
+        # RSC body with no objects containing both id and slug
+        body = '"item":{"title":"No id or slug here"}'
+        candidates = ft._find_candidate_rsc_keys(body)
+        self.assertEqual(candidates, [])
+
+    def test_deduplicates_same_key_appearing_multiple_times(self):
+        # The same key "newKey": appears before two different objects
+        obj = '{"id":"1","slug":"s1","title":"T"}'
+        body = f'"newKey":{obj}\n"newKey":' + '{"id":"2","slug":"s2","title":"T"}'
+        candidates = ft._find_candidate_rsc_keys(body)
+        self.assertEqual(candidates.count('"newKey":'), 1)
+
+    def test_respects_max_results_limit(self):
+        # Five different keys with valid objects — max_results=3 should return only 3
+        parts = [f'"key{i}":' + '{"id":"' + str(i) + '","slug":"s' + str(i) + '"}' for i in range(5)]
+        body = '\n'.join(parts)
+        candidates = ft._find_candidate_rsc_keys(body, max_results=3)
+        self.assertEqual(len(candidates), 3)
+
+    def test_ignores_objects_missing_id(self):
+        body = '"noId":{"slug":"s1","title":"T"}'
+        candidates = ft._find_candidate_rsc_keys(body)
+        self.assertEqual(candidates, [])
+
+    def test_ignores_objects_missing_slug(self):
+        body = '"noSlug":{"id":"1","title":"T"}'
+        candidates = ft._find_candidate_rsc_keys(body)
+        self.assertEqual(candidates, [])
+
+    def test_handles_empty_body(self):
+        candidates = ft._find_candidate_rsc_keys('')
+        self.assertEqual(candidates, [])
+
+    def test_candidate_key_format_includes_quotes_and_colon(self):
+        # Returned candidates should be in the form '"keyName":' (with surrounding quotes)
+        body = '"templateData":{"id":"1","slug":"s1"}'
+        candidates = ft._find_candidate_rsc_keys(body)
+        self.assertTrue(len(candidates) >= 1)
+        self.assertTrue(candidates[0].startswith('"'))
+        self.assertTrue(candidates[0].endswith(':'))
+
+
+class TestFetchFromRscCandidateKeys(unittest.TestCase):
+    """Tests for candidate_keys logging in fetch_from_rsc."""
+
+    def test_candidate_keys_logged_when_zero_templates_and_zero_parse_errors(self):
+        """When 0 templates + 0 parse errors, candidate_keys must appear in the error log
+        if _find_candidate_rsc_keys finds any candidates."""
+        import error_log as el
+        # Build a body with a new key that produces id+slug objects, but no known RSC key
+        body = '"unknownKey":{"id":"1","slug":"s1","title":"T"}'
+        with patch('framer_templates.http_get', return_value=body), \
+             patch.object(el, 'log_error') as mock_log:
+            ft.fetch_from_rsc()
+        low_count_calls = [
+            c for c in mock_log.call_args_list
+            if len(c[0]) >= 4 and isinstance(c[0][3], dict) and 'count' in c[0][3]
+        ]
+        self.assertTrue(low_count_calls, 'Expected a low-count log_error call')
+        ctx = low_count_calls[0][0][3]
+        self.assertIn('candidate_keys', ctx)
+        self.assertIn('"unknownKey":', ctx['candidate_keys'])
+
+    def test_candidate_keys_absent_when_no_candidates_found(self):
+        """When _find_candidate_rsc_keys returns empty, candidate_keys must not appear in ctx."""
+        import error_log as el
+        # Body with no objects containing both id and slug
+        body = 'no templates here, no id/slug objects'
+        with patch('framer_templates.http_get', return_value=body), \
+             patch.object(el, 'log_error') as mock_log:
+            ft.fetch_from_rsc()
+        low_count_calls = [
+            c for c in mock_log.call_args_list
+            if len(c[0]) >= 4 and isinstance(c[0][3], dict) and 'count' in c[0][3]
+        ]
+        self.assertTrue(low_count_calls)
+        ctx = low_count_calls[0][0][3]
+        self.assertNotIn('candidate_keys', ctx)
+
+    def test_candidate_keys_absent_when_parse_errors_present(self):
+        """When parse_errors > 0, candidate key scanning is skipped (JSON is found but malformed)."""
+        import error_log as el
+        # One valid template (< 5) + one unclosed object = parse_errors > 0
+        # Candidate scanning should not run because parse_errors != 0
+        body = _rsc_item('valid-one', id_='1') + '\n"item":{"id":"2","slug":"bad"'  # unclosed
+        with patch('framer_templates.http_get', return_value=body), \
+             patch.object(el, 'log_error') as mock_log:
+            ft.fetch_from_rsc()
+        low_count_calls = [
+            c for c in mock_log.call_args_list
+            if len(c[0]) >= 4 and isinstance(c[0][3], dict) and 'count' in c[0][3]
+        ]
+        self.assertTrue(low_count_calls)
+        ctx = low_count_calls[0][0][3]
+        # candidate_keys should not appear — parse_errors > 0 means the key IS known
+        self.assertNotIn('candidate_keys', ctx)
+
+    def test_candidate_keys_absent_when_templates_found(self):
+        """When >= 5 templates are found, no low-count error is logged at all."""
+        import error_log as el
+        body = '\n'.join(_rsc_item(f's-{i}', id_=str(i)) for i in range(5))
+        with patch('framer_templates.http_get', return_value=body), \
+             patch.object(el, 'log_error') as mock_log:
+            ft.fetch_from_rsc()
+        low_count_calls = [
+            c for c in mock_log.call_args_list
+            if len(c[0]) >= 4 and isinstance(c[0][3], dict) and 'count' in c[0][3]
+        ]
+        self.assertEqual(low_count_calls, [], 'No low-count error expected when >= 5 templates found')
+
+
+# ---------------------------------------------------------------------------
 # infer_category / group_by_category
 # ---------------------------------------------------------------------------
 
