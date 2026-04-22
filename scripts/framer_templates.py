@@ -234,12 +234,20 @@ def fetch_from_rsc() -> list[dict]:
             'body_preview': last_body[:500],
         }
         # When no known key matched AND no parse errors occurred, the RSC format
-        # has likely changed to use a completely new key.  Scan the body for JSON
-        # objects that contain both "id": and "slug": fields and log the key
-        # prefixes immediately before them — this reveals the new key name so a
+        # has likely changed to use a completely new key.  Scan all fetched pages
+        # for JSON objects that contain both "id": and "slug": fields and log the
+        # key prefixes immediately before them — this reveals the new key name so a
         # fallback entry can be added without manually inspecting raw RSC output.
+        # All pages are scanned (not just the last) so that candidates are not
+        # missed when page 2 happens to contain fewer template objects than page 1.
         if len(templates) == 0 and total_parse_errors == 0:
-            candidate_keys = _find_candidate_rsc_keys(last_body)
+            candidate_keys: list[str] = []
+            seen_candidate_keys: set[str] = set()
+            for body in bodies:
+                for key in _find_candidate_rsc_keys(body):
+                    if key not in seen_candidate_keys:
+                        seen_candidate_keys.add(key)
+                        candidate_keys.append(key)
             if candidate_keys:
                 ctx['candidate_keys'] = candidate_keys
         error_log.log_error(
