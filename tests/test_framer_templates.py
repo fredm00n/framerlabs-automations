@@ -689,6 +689,63 @@ class TestFetchFromRscCandidateKeys(unittest.TestCase):
         ]
         self.assertEqual(low_count_calls, [], 'No low-count error expected when >= 5 templates found')
 
+    def test_candidate_keys_scanned_across_all_pages_not_just_last(self):
+        """Candidate keys from page 1 must be included even when page 2 has none.
+
+        fetch_from_rsc fetches up to 2 pages.  If the new RSC key only appears on
+        page 1 and page 2 is a stripped-down response (e.g. just the RSC frame with
+        no template objects), the scanner must still report the key from page 1.
+        """
+        import error_log as el
+        # Page 1: contains a template under a new unknown key (triggers 20 new items
+        # because we need >=20 new items to fetch page 2 — but we only have 1 here,
+        # so fetch_from_rsc will stop at page 1).  Use _full_page-style body with
+        # the unknown key so we get exactly 20 items (triggers page 2 fetch).
+        page1_items = '\n'.join(
+            f'"unknownKey":{{"id":"{i}","slug":"s{i}","title":"T"}}'
+            for i in range(20)
+        )
+        # Page 2: empty RSC frame — no template objects
+        page2 = '1:"$Sreact.fragment"\n'
+        with patch('framer_templates.http_get', side_effect=[page1_items, page2]), \
+             patch.object(el, 'log_error') as mock_log:
+            ft.fetch_from_rsc()
+        low_count_calls = [
+            c for c in mock_log.call_args_list
+            if len(c[0]) >= 4 and isinstance(c[0][3], dict) and 'count' in c[0][3]
+        ]
+        self.assertTrue(low_count_calls, 'Expected a low-count log_error call')
+        ctx = low_count_calls[0][0][3]
+        self.assertIn('candidate_keys', ctx,
+                      'candidate_keys must be logged even when the key only appears on page 1')
+        self.assertIn('"unknownKey":', ctx['candidate_keys'])
+
+    def test_candidate_keys_deduped_across_pages(self):
+        """The same key appearing on both pages must only appear once in candidate_keys."""
+        import error_log as el
+        page1 = '"unknownKey":{"id":"1","slug":"s1","title":"T"}'
+        page2 = '"unknownKey":{"id":"2","slug":"s2","title":"T"}'
+        # page1 has 1 item → fetch_from_rsc stops (< 20 new), no page 2 fetch.
+        # To force both pages to be fetched, make page1 have exactly 20 items.
+        page1_full = '\n'.join(
+            f'"unknownKey":{{"id":"{i}","slug":"s{i}","title":"T"}}'
+            for i in range(20)
+        )
+        with patch('framer_templates.http_get', side_effect=[page1_full, page2]), \
+             patch.object(el, 'log_error') as mock_log:
+            ft.fetch_from_rsc()
+        low_count_calls = [
+            c for c in mock_log.call_args_list
+            if len(c[0]) >= 4 and isinstance(c[0][3], dict) and 'count' in c[0][3]
+        ]
+        self.assertTrue(low_count_calls)
+        ctx = low_count_calls[0][0][3]
+        candidate_keys = ctx.get('candidate_keys', [])
+        self.assertEqual(
+            candidate_keys.count('"unknownKey":'), 1,
+            'Same key from multiple pages must not be duplicated in candidate_keys',
+        )
+
 
 # ---------------------------------------------------------------------------
 # infer_category / group_by_category
