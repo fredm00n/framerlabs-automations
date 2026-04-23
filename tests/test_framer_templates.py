@@ -748,6 +748,159 @@ class TestFetchFromRscCandidateKeys(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# _sample_rsc_line_prefixes
+# ---------------------------------------------------------------------------
+
+class TestSampleRscLinePrefixes(unittest.TestCase):
+
+    def test_returns_empty_list_for_empty_body(self):
+        self.assertEqual(ft._sample_rsc_line_prefixes(''), [])
+
+    def test_returns_empty_list_when_no_numbered_lines(self):
+        body = 'just some text\nnot RSC format'
+        self.assertEqual(ft._sample_rsc_line_prefixes(body), [])
+
+    def test_extracts_single_rsc_line(self):
+        body = '1:"$Sreact.fragment"'
+        result = ft._sample_rsc_line_prefixes(body)
+        self.assertEqual(len(result), 1)
+        self.assertTrue(result[0].startswith('1:'))
+        self.assertIn('"$Sr', result[0])
+
+    def test_deduplicates_same_payload_prefix(self):
+        # Two lines with the same payload prefix ('"$Sr') should appear only once
+        body = '1:"$Sreact.fragment"\n2:"$Sreact.suspense"'
+        result = ft._sample_rsc_line_prefixes(body)
+        # Both have payload starting with '"$Sr' — should be deduplicated
+        self.assertEqual(len(result), 1)
+
+    def test_collects_distinct_payload_types(self):
+        body = '1:"$Sreact.fragment"\n3:I[339756,[]]\n5:{"id":"1"}'
+        result = ft._sample_rsc_line_prefixes(body)
+        # Three distinct prefixes: '"$Sr', 'I[33', '{"id'
+        self.assertEqual(len(result), 3)
+
+    def test_respects_max_lines_limit(self):
+        # 15 lines each with a distinct 4-char payload prefix
+        # Use uppercase letters A-O to guarantee uniqueness (15 distinct types)
+        import string
+        prefixes = list(string.ascii_uppercase[:15])
+        lines = [f'{i}:{p}xxx_payload_{i}' for i, p in enumerate(prefixes)]
+        body = '\n'.join(lines)
+        result = ft._sample_rsc_line_prefixes(body, max_lines=5)
+        self.assertEqual(len(result), 5)
+
+    def test_skips_blank_lines(self):
+        body = '\n\n1:"$Sreact.fragment"\n\n3:I[1,[]]'
+        result = ft._sample_rsc_line_prefixes(body)
+        self.assertEqual(len(result), 2)
+
+    def test_format_is_row_colon_prefix(self):
+        # Each returned string should be "<row>:<payload_prefix>"
+        body = '5:I[339756,[]]'
+        result = ft._sample_rsc_line_prefixes(body)
+        self.assertEqual(len(result), 1)
+        self.assertTrue(result[0].startswith('5:'))
+        self.assertEqual(result[0], '5:I[33')
+
+    def test_ignores_non_numeric_prefix_lines(self):
+        body = 'abc:notanrscline\n1:"$Sreact.fragment"'
+        result = ft._sample_rsc_line_prefixes(body)
+        self.assertEqual(len(result), 1)
+        self.assertIn('"$Sr', result[0])
+
+    def test_handles_body_matching_april20_error_preview(self):
+        # Reproduce the body_preview from the April 20 framer_templates warning
+        body = (
+            '1:"$Sreact.fragment"\n'
+            '3:"$Sreact.suspense"\n'
+            '5:I[339756,["/creators-assets/_next/static/chunks/6005aca2ea3cc118.js"],"default"]\n'
+        )
+        result = ft._sample_rsc_line_prefixes(body)
+        self.assertGreater(len(result), 0)
+        # Should capture both the "$S" and "I[" payload types
+        prefixes_combined = ' '.join(result)
+        self.assertIn('"$Sr', prefixes_combined)
+        self.assertIn('I[33', prefixes_combined)
+
+
+class TestFetchFromRscLineTypeLogging(unittest.TestCase):
+    """Tests for rsc_line_types fallback diagnostic when no candidates found."""
+
+    def test_rsc_line_types_logged_when_no_candidate_keys_and_rsc_format_body(self):
+        """When 0 templates + 0 parse_errors + 0 candidate_keys, rsc_line_types must
+        be logged if the body contains RSC flight-format lines."""
+        import error_log as el
+        # Body that looks like RSC flight format (no JSON template objects)
+        body = (
+            '1:"$Sreact.fragment"\n'
+            '3:"$Sreact.suspense"\n'
+            '5:I[339756,[],"default"]\n'
+        )
+        with patch('framer_templates.http_get', return_value=body), \
+             patch.object(el, 'log_error') as mock_log:
+            ft.fetch_from_rsc()
+        low_count_calls = [
+            c for c in mock_log.call_args_list
+            if len(c[0]) >= 4 and isinstance(c[0][3], dict) and 'count' in c[0][3]
+        ]
+        self.assertTrue(low_count_calls, 'Expected a low-count log_error call')
+        ctx = low_count_calls[0][0][3]
+        self.assertIn('rsc_line_types', ctx,
+                      'rsc_line_types must be logged when RSC flight lines are present but no templates found')
+        self.assertIsInstance(ctx['rsc_line_types'], list)
+        self.assertGreater(len(ctx['rsc_line_types']), 0)
+
+    def test_rsc_line_types_absent_when_candidate_keys_found(self):
+        """When candidate_keys are found, rsc_line_types must NOT appear (redundant)."""
+        import error_log as el
+        # Body with a new key that has id+slug objects — candidate_keys will be found
+        body = '"newFormatKey":{"id":"1","slug":"s1","title":"T"}'
+        with patch('framer_templates.http_get', return_value=body), \
+             patch.object(el, 'log_error') as mock_log:
+            ft.fetch_from_rsc()
+        low_count_calls = [
+            c for c in mock_log.call_args_list
+            if len(c[0]) >= 4 and isinstance(c[0][3], dict) and 'count' in c[0][3]
+        ]
+        self.assertTrue(low_count_calls)
+        ctx = low_count_calls[0][0][3]
+        self.assertNotIn('rsc_line_types', ctx,
+                         'rsc_line_types must not appear when candidate_keys was already logged')
+
+    def test_rsc_line_types_absent_when_parse_errors_nonzero(self):
+        """When parse_errors > 0, rsc_line_types must not appear (wrong diagnostic branch)."""
+        import error_log as el
+        body = _rsc_item('only-one', id_='1') + '\n"item":{"id":"2","slug":"bad"'  # unclosed
+        with patch('framer_templates.http_get', return_value=body), \
+             patch.object(el, 'log_error') as mock_log:
+            ft.fetch_from_rsc()
+        low_count_calls = [
+            c for c in mock_log.call_args_list
+            if len(c[0]) >= 4 and isinstance(c[0][3], dict) and 'count' in c[0][3]
+        ]
+        self.assertTrue(low_count_calls)
+        ctx = low_count_calls[0][0][3]
+        self.assertNotIn('rsc_line_types', ctx)
+
+    def test_rsc_line_types_absent_when_body_has_no_rsc_lines(self):
+        """When body has no RSC flight lines, rsc_line_types must not appear."""
+        import error_log as el
+        # Body with no templates and no RSC-format lines
+        body = 'no templates here, plain text only'
+        with patch('framer_templates.http_get', return_value=body), \
+             patch.object(el, 'log_error') as mock_log:
+            ft.fetch_from_rsc()
+        low_count_calls = [
+            c for c in mock_log.call_args_list
+            if len(c[0]) >= 4 and isinstance(c[0][3], dict) and 'count' in c[0][3]
+        ]
+        self.assertTrue(low_count_calls)
+        ctx = low_count_calls[0][0][3]
+        self.assertNotIn('rsc_line_types', ctx)
+
+
+# ---------------------------------------------------------------------------
 # infer_category / group_by_category
 # ---------------------------------------------------------------------------
 

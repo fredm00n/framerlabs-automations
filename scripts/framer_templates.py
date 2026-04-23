@@ -165,6 +165,44 @@ def _find_candidate_rsc_keys(body: str, max_results: int = 5) -> list[str]:
     return candidates
 
 
+def _sample_rsc_line_prefixes(body: str, max_lines: int = 10) -> list[str]:
+    """Return up to *max_lines* distinct RSC line-type prefixes from *body*.
+
+    Each line in the RSC flight format starts with a numeric row index followed
+    by a colon and then the line payload, e.g. ``1:"$Sreact.fragment"`` or
+    ``5:I[339756,[...],...]``.  This function extracts the first character(s) of
+    each unique payload type (the part immediately after ``<num>:``) so a human
+    reader can quickly identify the encoding in use without reading hundreds of
+    lines of raw RSC output.
+
+    Returns a list of up to *max_lines* unique strings of the form
+    ``"<row>:<first-char(s)>"`` — for example ``['1:"$S', '3:I[', '5:{']``.
+    An empty list is returned when *body* contains no RSC-style numbered lines.
+    """
+    seen: set[str] = set()
+    samples: list[str] = []
+    for line in body.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # RSC flight lines start with a number followed by a colon
+        colon = line.find(':')
+        if colon <= 0 or not line[:colon].isdigit():
+            continue
+        row = line[:colon]
+        payload = line[colon + 1:]
+        # Use the first 4 characters of the payload as the "type signature"
+        type_sig = f'{row}:{payload[:4]}'
+        # Deduplicate by payload prefix (ignoring the row number for uniqueness)
+        payload_prefix = payload[:4]
+        if payload_prefix not in seen:
+            seen.add(payload_prefix)
+            samples.append(type_sig)
+            if len(samples) >= max_lines:
+                break
+    return samples
+
+
 def fetch_from_rsc() -> list[dict]:
     # Framer uses Next.js RSC (React Server Components). Fetching the marketplace
     # URL with Rsc: 1 header returns a structured component stream that includes
@@ -250,6 +288,17 @@ def fetch_from_rsc() -> list[dict]:
                         candidate_keys.append(key)
             if candidate_keys:
                 ctx['candidate_keys'] = candidate_keys
+            else:
+                # No known or candidate JSON keys found at all — the RSC encoding
+                # may have changed at a higher level (e.g. to a pure flight-format
+                # line protocol with no inline JSON objects).  Log a sample of the
+                # distinct RSC line-type prefixes from all fetched pages so a human
+                # can immediately see the new structure without digging into raw logs.
+                rsc_line_types: list[str] = _sample_rsc_line_prefixes(
+                    '\n'.join(bodies), max_lines=10
+                )
+                if rsc_line_types:
+                    ctx['rsc_line_types'] = rsc_line_types
         error_log.log_error(
             'framer_templates', 'warning',
             f'Only {len(templates)} templates parsed from RSC — format may have changed',
