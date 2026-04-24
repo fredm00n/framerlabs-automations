@@ -1087,6 +1087,24 @@ class TestSaveToNotion(unittest.TestCase):
         retry_props = mock_post.call_args_list[1][0][1]['properties']
         self.assertNotIn('Thumbnail', retry_props)
 
+    def test_400_with_thumbnail_logs_notion_response(self):
+        """Notion 400 on Thumbnail path logs the response body and slug for diagnosis."""
+        import io
+        t = {**_BASE_TEMPLATE, 'slug': 'my-template', 'thumbnail': 'https://example.com/t.jpg'}
+        response_body = b'{"message": "Property not found"}'
+        error = urllib.error.HTTPError(
+            None, 400, 'Bad Request', {}, io.BytesIO(response_body)
+        )
+        with patch('framer_templates.http_post', side_effect=[error, {}]):
+            with patch('error_log.log_error') as mock_log:
+                ft.save_to_notion(t)
+        mock_log.assert_called_once()
+        call_kwargs = mock_log.call_args
+        ctx = call_kwargs[0][3]  # positional arg: context dict
+        self.assertIn('notion_response', ctx)
+        self.assertIn('Property not found', ctx['notion_response'])
+        self.assertEqual(ctx['slug'], 'my-template')
+
     def test_includes_author_url_when_slug_present(self):
         t = {**_BASE_TEMPLATE, 'author_slug': 'alice-studio'}
         with patch('framer_templates.http_post', return_value={}) as mock_post:
