@@ -505,6 +505,16 @@ def save_to_notion(template: dict) -> None:
     except urllib.error.HTTPError as e:
         if e.code == 400 and 'Thumbnail' in props:
             # Thumbnail property may not exist in DB schema yet; retry without it
+            notion_response = ''
+            try:
+                notion_response = e.read().decode('utf-8', errors='replace')[:500]
+            except Exception:
+                pass
+            error_log.log_error(
+                'framer_templates', 'warning',
+                f'Notion 400 on save with Thumbnail for "{template.get("slug", "")}" — retrying without Thumbnail',
+                {'slug': template.get('slug', ''), 'notion_response': notion_response},
+            )
             props.pop('Thumbnail')
             http_post(
                 'https://api.notion.com/v1/pages',
