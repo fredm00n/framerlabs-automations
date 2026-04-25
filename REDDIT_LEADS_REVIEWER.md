@@ -43,6 +43,7 @@ This prints a JSON array of all leads with `Status = pending`. Each item has:
 - `url` — Link to the Reddit post
 - `subreddit` — Which subreddit it came from
 - `content` — First 1000 chars of post content
+- `post_date` — ISO 8601 datetime when the Reddit post was published (empty string if unavailable)
 
 If the output is an empty array `[]`, there is nothing to review — exit cleanly.
 

@@ -158,6 +158,7 @@ Post Date, Discovered, Review Notes, Notified (checkbox)
 - Expanded `_JOB_SEEKER_SIGNALS` — additional phrases like `"open to work"` could reduce false positives; skipped as Claude's Phase 2 review already filters these out reliably, and adding overly broad exclusions risks dropping genuine leads
 - Persistent 400 tracking across runs — implemented: on any non-retriable HTTP error (e.g. 400 Bad Request) when saving a lead, `save_failed_sentinel_to_notion` writes a minimal page with `Status: failed` and the URL to Notion so future dedup checks skip the URL; the `_is_valid_iso8601_date` guard prevents invalid `post_date` values from causing 400s in the first place
 - Dedup-check error isolation — implemented: `url_exists_in_notion` is now in its own `try/except` block in `main()`, separate from `save_lead_to_notion`; a transient Notion error during the dedup check is logged as a warning and the post is skipped, instead of being misclassified as a save error and incorrectly writing a failed-sentinel that would permanently blacklist the URL
+- `post_date` in reviewer output — implemented: `get_pending_leads()` now returns `post_date` (the ISO 8601 post creation time from the Notion `Post Date` field, or empty string if unset) so the reviewer session can see how old a lead is and deprioritise stale posts
 
 ---
 

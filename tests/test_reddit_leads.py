@@ -686,6 +686,62 @@ class TestGetPendingLeads(unittest.TestCase):
         second_call_body = mock_post.call_args_list[1][0][1]
         self.assertEqual(second_call_body['start_cursor'], 'cursor-abc')
 
+    @patch('scripts.reddit_leads.http_post')
+    def test_includes_post_date_when_present(self, mock_post):
+        """post_date must be extracted from the Notion Post Date field when present."""
+        mock_post.return_value = {
+            'results': [{
+                'id': 'page-dt',
+                'properties': {
+                    'Name': {'title': [{'plain_text': 'Lead with date'}]},
+                    'URL': {'url': 'https://reddit.com/3'},
+                    'Subreddit': {'select': {'name': 'forhire'}},
+                    'Content': {'rich_text': [{'plain_text': 'Some content'}]},
+                    'Post Date': {'date': {'start': '2026-04-20T08:00:00+00:00'}},
+                },
+            }],
+            'has_more': False,
+        }
+        leads = get_pending_leads('db-id')
+        self.assertEqual(leads[0]['post_date'], '2026-04-20T08:00:00+00:00')
+
+    @patch('scripts.reddit_leads.http_post')
+    def test_post_date_empty_string_when_field_absent(self, mock_post):
+        """post_date must be an empty string when the Post Date property is missing."""
+        mock_post.return_value = {
+            'results': [{
+                'id': 'page-nodt',
+                'properties': {
+                    'Name': {'title': [{'plain_text': 'Lead no date'}]},
+                    'URL': {'url': 'https://reddit.com/4'},
+                    'Subreddit': {'select': {'name': 'framer'}},
+                    'Content': {'rich_text': []},
+                },
+            }],
+            'has_more': False,
+        }
+        leads = get_pending_leads('db-id')
+        self.assertEqual(leads[0]['post_date'], '')
+
+    @patch('scripts.reddit_leads.http_post')
+    def test_post_date_empty_string_when_date_value_is_null(self, mock_post):
+        """post_date must be empty string when Post Date.date is null (Notion unset date)."""
+        mock_post.return_value = {
+            'results': [{
+                'id': 'page-nulldt',
+                'properties': {
+                    'Name': {'title': [{'plain_text': 'Lead null date'}]},
+                    'URL': {'url': 'https://reddit.com/5'},
+                    'Subreddit': {'select': {'name': 'framer'}},
+                    'Content': {'rich_text': []},
+                    'Post Date': {'date': None},
+                },
+            }],
+            'has_more': False,
+        }
+        leads = get_pending_leads('db-id')
+        self.assertEqual(leads[0]['post_date'], '')
+
 
 # ---------------------------------------------------------------------------
 # TestGetLeadById
