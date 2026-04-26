@@ -441,12 +441,14 @@ def get_pending_leads(db_id: str) -> list[dict]:
             title_rt = props.get('Name', {}).get('title', [])
             subreddit_sel = props.get('Subreddit', {}).get('select') or {}
             content_rt = props.get('Content', {}).get('rich_text', [])
+            post_date_prop = props.get('Post Date', {}).get('date') or {}
             leads.append({
                 'page_id': page['id'],
                 'title': title_rt[0]['plain_text'] if title_rt else '',
                 'url': props.get('URL', {}).get('url', '') or '',
                 'subreddit': subreddit_sel.get('name', ''),
                 'content': content_rt[0]['plain_text'] if content_rt else '',
+                'post_date': post_date_prop.get('start', ''),
             })
         if not data.get('has_more'):
             break
