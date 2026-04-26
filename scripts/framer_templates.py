@@ -787,7 +787,21 @@ def main() -> None:
         print(f'Missing required env vars: {", ".join(missing)}')
         raise SystemExit(1)
 
-    templates = fetch_framer_templates()
+    try:
+        templates = fetch_framer_templates()
+    except Exception as e:
+        msg = f'ERROR: fetch_framer_templates failed: {e}'
+        print(msg)
+        error_log.log_error(
+            'framer_templates', 'error',
+            'fetch_framer_templates raised an unexpected exception',
+            {'error': str(e)},
+        )
+        _warn_discord(
+            f'ERROR: framer_templates.py failed to fetch templates from Framer RSC: {e}'
+            ' — Check GitHub Actions logs.'
+        )
+        raise SystemExit(1)
     if len(templates) < 5:
         _warn_discord(
             f'WARNING: only {len(templates)} template(s) parsed from Framer RSC'
