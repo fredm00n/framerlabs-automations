@@ -105,6 +105,7 @@ Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort
 - Richer HTTP error reporting — when `save_to_notion` raises an `HTTPError` (e.g. 400 Bad Request), the Notion API response body (first 500 chars) is now captured and logged as `notion_response` in `logs/errors.jsonl`, matching the same pattern used by `reddit_leads.py`. Non-HTTP exceptions still log `slug` and `error` string only.
 - Category inference accuracy — keyword matching may miscategorise edge cases; an LLM-based approach could be added if accuracy becomes important. The inferred category is now persisted to Notion (as a `select` field) so miscategorisations are visible and correctable in the DB.
 - Additional `CATEGORY_KEYWORDS` entries (e.g. `event`, `wedding`, `fintech`) — could reduce "Other" categorisations; skipped as the keyword list is already broad and new entries would need data from real Framer Marketplace templates to validate accuracy.
+- Fetch failure alerting — if `fetch_framer_templates()` raises an exception (e.g. network error, HTTP error after retries), `main()` now catches it, logs it to `logs/errors.jsonl` at `error` severity, sends a Discord error alert to `DISCORD_ALERTS_WEBHOOK_URL`, and exits with code 1. Previously the exception propagated silently to GitHub Actions without any Discord notification.
 
 ---
 

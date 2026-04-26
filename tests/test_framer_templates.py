@@ -1662,6 +1662,52 @@ class TestMain(unittest.TestCase):
             ft.main()
         warn_mock.assert_not_called()
 
+    def test_fetch_failure_sends_discord_error_alert(self):
+        """When fetch_framer_templates raises, a Discord error alert must be sent."""
+        with patch('framer_templates.fetch_framer_templates',
+                   side_effect=Exception('network error')), \
+             patch('framer_templates._warn_discord') as warn_mock, \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            with self.assertRaises(SystemExit):
+                ft.main()
+        warn_mock.assert_called_once()
+        self.assertIn('ERROR', warn_mock.call_args[0][0])
+
+    def test_fetch_failure_logs_error(self):
+        """When fetch_framer_templates raises, an error must be written to the error log."""
+        import error_log as el
+        with patch('framer_templates.fetch_framer_templates',
+                   side_effect=Exception('connection refused')), \
+             patch('framer_templates._warn_discord'), \
+             patch.object(el, 'log_error') as mock_log, \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            with self.assertRaises(SystemExit):
+                ft.main()
+        self.assertTrue(mock_log.called)
+        severity = mock_log.call_args[0][1]
+        self.assertEqual(severity, 'error')
+
+    def test_fetch_failure_exits_with_nonzero(self):
+        """When fetch_framer_templates raises, main() must exit with a non-zero code."""
+        with patch('framer_templates.fetch_framer_templates',
+                   side_effect=urllib.error.URLError('connection refused')), \
+             patch('framer_templates._warn_discord'), \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            with self.assertRaises(SystemExit) as ctx:
+                ft.main()
+        self.assertNotEqual(ctx.exception.code, 0)
+
+    def test_fetch_failure_does_not_call_get_seen_slugs(self):
+        """When fetch_framer_templates raises, get_seen_slugs must not be called."""
+        with patch('framer_templates.fetch_framer_templates',
+                   side_effect=Exception('fetch error')), \
+             patch('framer_templates._warn_discord'), \
+             patch('framer_templates.get_seen_slugs') as mock_slugs, \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            with self.assertRaises(SystemExit):
+                ft.main()
+        mock_slugs.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # _warn_discord
