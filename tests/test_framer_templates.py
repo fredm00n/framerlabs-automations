@@ -748,6 +748,45 @@ class TestFetchFromRscCandidateKeys(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# _rsc_payload_type
+# ---------------------------------------------------------------------------
+
+class TestRscPayloadType(unittest.TestCase):
+
+    def test_chunk_reference_normalises_to_I_bracket(self):
+        self.assertEqual(ft._rsc_payload_type('I[339756,[],\"default\"]'), 'I[')
+
+    def test_chunk_reference_with_different_id_same_type(self):
+        # Different chunk IDs must produce the same label
+        self.assertEqual(ft._rsc_payload_type('I[837457,[]]'), 'I[')
+        self.assertEqual(ft._rsc_payload_type('I[100000,[]]'), 'I[')
+
+    def test_react_server_component_ref(self):
+        self.assertEqual(ft._rsc_payload_type('"$Sreact.fragment"'), '"$S"')
+
+    def test_react_special_string(self):
+        self.assertEqual(ft._rsc_payload_type('"$undefined"'), '"$"')
+
+    def test_plain_string_literal(self):
+        self.assertEqual(ft._rsc_payload_type('"hello world"'), '"str"')
+
+    def test_inline_json_object(self):
+        self.assertEqual(ft._rsc_payload_type('{"id":"1"}'), '{')
+
+    def test_json_array(self):
+        self.assertEqual(ft._rsc_payload_type('[1,2,3]'), '[')
+
+    def test_fallback_for_unknown_payload(self):
+        # Unknown payload types fall back to first 4 characters
+        self.assertEqual(ft._rsc_payload_type('null'), 'null')
+        self.assertEqual(ft._rsc_payload_type('true'), 'true')
+        self.assertEqual(ft._rsc_payload_type('XY'), 'XY')
+
+    def test_empty_payload_fallback(self):
+        self.assertEqual(ft._rsc_payload_type(''), '')
+
+
+# ---------------------------------------------------------------------------
 # _sample_rsc_line_prefixes
 # ---------------------------------------------------------------------------
 
@@ -765,24 +804,37 @@ class TestSampleRscLinePrefixes(unittest.TestCase):
         result = ft._sample_rsc_line_prefixes(body)
         self.assertEqual(len(result), 1)
         self.assertTrue(result[0].startswith('1:'))
-        self.assertIn('"$Sr', result[0])
+        self.assertIn('"$S"', result[0])
 
-    def test_deduplicates_same_payload_prefix(self):
-        # Two lines with the same payload prefix ('"$Sr') should appear only once
+    def test_deduplicates_same_payload_type(self):
+        # Two "$S" lines (react.fragment and react.suspense) — same type, deduplicated
         body = '1:"$Sreact.fragment"\n2:"$Sreact.suspense"'
         result = ft._sample_rsc_line_prefixes(body)
-        # Both have payload starting with '"$Sr' — should be deduplicated
         self.assertEqual(len(result), 1)
+
+    def test_chunk_references_with_different_ids_deduplicated(self):
+        # Multiple I[...] lines with different chunk IDs must produce exactly one entry
+        body = (
+            '5:I[339756,["/chunk-a.js"],"default"]\n'
+            '6:I[837457,["/chunk-b.js"],"default"]\n'
+            '7:I[100000,["/chunk-c.js"],"default"]\n'
+        )
+        result = ft._sample_rsc_line_prefixes(body)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0], '5:I[')
 
     def test_collects_distinct_payload_types(self):
         body = '1:"$Sreact.fragment"\n3:I[339756,[]]\n5:{"id":"1"}'
         result = ft._sample_rsc_line_prefixes(body)
-        # Three distinct prefixes: '"$Sr', 'I[33', '{"id'
+        # Three distinct types: '"$S"', 'I[', '{'
         self.assertEqual(len(result), 3)
+        type_labels = [r.split(':', 1)[1] for r in result]
+        self.assertIn('"$S"', type_labels)
+        self.assertIn('I[', type_labels)
+        self.assertIn('{', type_labels)
 
     def test_respects_max_lines_limit(self):
-        # 15 lines each with a distinct 4-char payload prefix
-        # Use uppercase letters A-O to guarantee uniqueness (15 distinct types)
+        # 15 lines each with a distinct fallback payload (uppercase letters)
         import string
         prefixes = list(string.ascii_uppercase[:15])
         lines = [f'{i}:{p}xxx_payload_{i}' for i, p in enumerate(prefixes)]
@@ -795,33 +847,37 @@ class TestSampleRscLinePrefixes(unittest.TestCase):
         result = ft._sample_rsc_line_prefixes(body)
         self.assertEqual(len(result), 2)
 
-    def test_format_is_row_colon_prefix(self):
-        # Each returned string should be "<row>:<payload_prefix>"
+    def test_format_is_row_colon_type(self):
+        # Each returned string should be "<row>:<normalised_type>"
         body = '5:I[339756,[]]'
         result = ft._sample_rsc_line_prefixes(body)
         self.assertEqual(len(result), 1)
         self.assertTrue(result[0].startswith('5:'))
-        self.assertEqual(result[0], '5:I[33')
+        self.assertEqual(result[0], '5:I[')
 
     def test_ignores_non_numeric_prefix_lines(self):
         body = 'abc:notanrscline\n1:"$Sreact.fragment"'
         result = ft._sample_rsc_line_prefixes(body)
         self.assertEqual(len(result), 1)
-        self.assertIn('"$Sr', result[0])
+        self.assertIn('"$S"', result[0])
 
     def test_handles_body_matching_april20_error_preview(self):
-        # Reproduce the body_preview from the April 20 framer_templates warning
+        # Reproduce the body_preview from the April 20 framer_templates warning.
+        # Multiple I[...] lines with different chunk IDs must collapse to one entry.
         body = (
             '1:"$Sreact.fragment"\n'
             '3:"$Sreact.suspense"\n'
             '5:I[339756,["/creators-assets/_next/static/chunks/6005aca2ea3cc118.js"],"default"]\n'
+            '6:I[837457,["/creators-assets/_next/static/chunks/c059ee9b9697f96a.js"],"default"]\n'
         )
         result = ft._sample_rsc_line_prefixes(body)
         self.assertGreater(len(result), 0)
-        # Should capture both the "$S" and "I[" payload types
-        prefixes_combined = ' '.join(result)
-        self.assertIn('"$Sr', prefixes_combined)
-        self.assertIn('I[33', prefixes_combined)
+        # Should capture the "$S" type and the "I[" chunk-reference type, but NOT
+        # duplicate I[ entries for different chunk IDs.
+        type_labels = [r.split(':', 1)[1] for r in result]
+        self.assertIn('"$S"', type_labels)
+        self.assertIn('I[', type_labels)
+        self.assertEqual(type_labels.count('I['), 1, 'Chunk references must not be duplicated')
 
 
 class TestFetchFromRscLineTypeLogging(unittest.TestCase):

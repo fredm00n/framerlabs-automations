@@ -165,18 +165,55 @@ def _find_candidate_rsc_keys(body: str, max_results: int = 5) -> list[str]:
     return candidates
 
 
+def _rsc_payload_type(payload: str) -> str:
+    """Return a normalised type label for an RSC flight-format payload string.
+
+    RSC payloads fall into a small number of structural types.  Using the raw
+    first 4 characters as a type key is imprecise because ``I[339756,...]`` and
+    ``I[837457,...]`` are both module-chunk references but would produce different
+    4-char labels (``I[33`` vs ``I[83``), causing ``_sample_rsc_line_prefixes``
+    to exhaust its quota on what is really a single line type.
+
+    Recognised types and their labels:
+    - ``I[...``  → ``"I["``   (module/chunk reference)
+    - ``"$S...`` → ``'"$S"``  (React server component reference)
+    - ``"$...``  → ``'"$"``   (other React special string)
+    - ``"...``   → ``'"str"`` (plain string literal)
+    - ``{...``   → ``"{"``    (inline JSON object)
+    - ``[...``   → ``"["``    (JSON array)
+    - anything else → first 4 characters (fallback)
+    """
+    if payload.startswith('I['):
+        return 'I['
+    if payload.startswith('"$S'):
+        return '"$S"'
+    if payload.startswith('"$'):
+        return '"$"'
+    if payload.startswith('"'):
+        return '"str"'
+    if payload.startswith('{'):
+        return '{'
+    if payload.startswith('['):
+        return '['
+    return payload[:4]
+
+
 def _sample_rsc_line_prefixes(body: str, max_lines: int = 10) -> list[str]:
     """Return up to *max_lines* distinct RSC line-type prefixes from *body*.
 
     Each line in the RSC flight format starts with a numeric row index followed
     by a colon and then the line payload, e.g. ``1:"$Sreact.fragment"`` or
-    ``5:I[339756,[...],...]``.  This function extracts the first character(s) of
-    each unique payload type (the part immediately after ``<num>:``) so a human
-    reader can quickly identify the encoding in use without reading hundreds of
-    lines of raw RSC output.
+    ``5:I[339756,[...],...]``.  This function extracts a normalised type label
+    for each unique payload type (via ``_rsc_payload_type``) so a human reader
+    can quickly identify the encoding in use without reading hundreds of lines of
+    raw RSC output.
+
+    Chunk references (``I[chunk_id,...]``) are all normalised to ``I[`` so that
+    the many distinct chunk IDs in a real RSC page do not exhaust the quota with
+    what is really a single line type.
 
     Returns a list of up to *max_lines* unique strings of the form
-    ``"<row>:<first-char(s)>"`` — for example ``['1:"$S', '3:I[', '5:{']``.
+    ``"<row>:<type>"`` — for example ``['1:"$S"', '3:I[', '5:{']``.
     An empty list is returned when *body* contains no RSC-style numbered lines.
     """
     seen: set[str] = set()
@@ -191,13 +228,12 @@ def _sample_rsc_line_prefixes(body: str, max_lines: int = 10) -> list[str]:
             continue
         row = line[:colon]
         payload = line[colon + 1:]
-        # Use the first 4 characters of the payload as the "type signature"
-        type_sig = f'{row}:{payload[:4]}'
-        # Deduplicate by payload prefix (ignoring the row number for uniqueness)
-        payload_prefix = payload[:4]
-        if payload_prefix not in seen:
-            seen.add(payload_prefix)
-            samples.append(type_sig)
+        # Normalise the payload to a canonical type label so that e.g. all chunk
+        # references (I[339756,...], I[837457,...]) are treated as one type.
+        payload_type = _rsc_payload_type(payload)
+        if payload_type not in seen:
+            seen.add(payload_type)
+            samples.append(f'{row}:{payload_type}')
             if len(samples) >= max_lines:
                 break
     return samples
