@@ -1,5 +1,7 @@
 # Scheduler instructions (Tier 2 — Self-Improvement Loop)
 
+> **IMPORTANT: Every session that implements a change MUST open a PR before ending. Do not end the session without opening one.**
+
 Script execution (Tier 1) runs on GitHub Actions cron every 15 minutes — see `.github/workflows/`. This scheduler handles only code review and improvement.
 
 ## Step 1 — Review for improvements
@@ -39,7 +41,7 @@ git push -u origin claude/improve-<script>-<short-description>
 
 Use GitHub MCP tools **only** for:
 - **Step 2**: `mcp__github__list_pull_requests` — check for existing open PRs
-- **Step 3, final sub-step**: `mcp__github__create_pull_request` — open a PR after pushing
+- **Step 3.7 (open PR)**: `mcp__github__create_pull_request` — open a PR after pushing
 
 ## Step 3 — Implement if worthwhile
 
@@ -51,7 +53,7 @@ If you find a clear, self-contained improvement with no existing open PR coverin
 4. Update or add tests in `tests/` for any modified or new functions (see Testing rules in CLAUDE.md)
 5. Run tests locally and fix any failures: `python3 -m unittest discover -s tests -p "test_*.py" -v`
 6. Commit with a descriptive message
-7. Push and open a PR against main for human review
+7. **Push and open a PR against main for human review — this step is mandatory and must not be skipped**
 8. Update the script's **Deferred improvements** section in CLAUDE.md with anything
    considered but not implemented, and why — commit this to the same branch
 
