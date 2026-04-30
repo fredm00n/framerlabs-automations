@@ -511,16 +511,16 @@ def get_seen_slugs() -> set[str]:
 
 def save_to_notion(template: dict) -> None:
     props: dict = {
-        'Name': {'title': [{'text': {'content': template['title']}}]},
-        'Slug': {'rich_text': [{'text': {'content': template['slug']}}]},
+        'Name': {'title': [{'text': {'content': template['title'][:2000]}}]},
+        'Slug': {'rich_text': [{'text': {'content': template['slug'][:2000]}}]},
         'URL': {'url': template['url']},
-        'Author': {'rich_text': [{'text': {'content': template.get('author', '')}}]},
-        'Price': {'rich_text': [{'text': {'content': template.get('price', '')}}]},
+        'Author': {'rich_text': [{'text': {'content': template.get('author', '')[:2000]}}]},
+        'Price': {'rich_text': [{'text': {'content': template.get('price', '')[:2000]}}]},
         'Discovered': {'date': {'start': datetime.now(timezone.utc).isoformat()}},
         'Category': {'select': {'name': infer_category(template)}},
     }
     if template.get('meta_title'):
-        props['Meta Title'] = {'rich_text': [{'text': {'content': template['meta_title']}}]}
+        props['Meta Title'] = {'rich_text': [{'text': {'content': template['meta_title'][:2000]}}]}
     if template.get('demo_url'):
         props['Demo URL'] = {'url': template['demo_url']}
     if template.get('remixes'):

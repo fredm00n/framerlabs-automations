@@ -1278,6 +1278,42 @@ class TestSaveToNotion(unittest.TestCase):
         dt = datetime.fromisoformat(discovered)
         self.assertIsNotNone(dt.tzinfo, 'Discovered timestamp must be timezone-aware')
 
+    def test_title_truncated_to_2000(self):
+        """Name title field must be truncated to 2000 chars to avoid Notion 400 errors."""
+        t = {**_BASE_TEMPLATE, 'title': 'x' * 3000}
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.save_to_notion(t)
+        props = mock_post.call_args[0][1]['properties']
+        name_val = props['Name']['title'][0]['text']['content']
+        self.assertEqual(len(name_val), 2000)
+
+    def test_author_truncated_to_2000(self):
+        """Author rich_text field must be truncated to 2000 chars."""
+        t = {**_BASE_TEMPLATE, 'author': 'A' * 3000}
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.save_to_notion(t)
+        props = mock_post.call_args[0][1]['properties']
+        author_val = props['Author']['rich_text'][0]['text']['content']
+        self.assertEqual(len(author_val), 2000)
+
+    def test_meta_title_truncated_to_2000(self):
+        """Meta Title rich_text field must be truncated to 2000 chars."""
+        t = {**_BASE_TEMPLATE, 'meta_title': 'M' * 3000}
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.save_to_notion(t)
+        props = mock_post.call_args[0][1]['properties']
+        meta_val = props['Meta Title']['rich_text'][0]['text']['content']
+        self.assertEqual(len(meta_val), 2000)
+
+    def test_price_truncated_to_2000(self):
+        """Price rich_text field must be truncated to 2000 chars."""
+        t = {**_BASE_TEMPLATE, 'price': '$' * 3000}
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.save_to_notion(t)
+        props = mock_post.call_args[0][1]['properties']
+        price_val = props['Price']['rich_text'][0]['text']['content']
+        self.assertEqual(len(price_val), 2000)
+
 
 # ---------------------------------------------------------------------------
 # _build_embed
