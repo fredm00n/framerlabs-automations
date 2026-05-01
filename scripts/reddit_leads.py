@@ -167,6 +167,13 @@ def _should_retry(exc: Exception) -> bool:
         return exc.code in (429, 500, 502, 503, 504)
     if isinstance(exc, urllib.error.URLError):
         return True  # network/connection errors
+    # Read timeouts raised after a connection is already established (e.g.
+    # during ``response.read()``) propagate as bare ``TimeoutError`` /
+    # ``socket.timeout``, NOT wrapped in ``URLError``.  Without this branch
+    # the existing ``"The read operation timed out"`` failures observed in
+    # logs/errors.jsonl bypass retry entirely.
+    if isinstance(exc, TimeoutError):
+        return True
     return False
 
 

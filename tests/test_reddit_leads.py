@@ -82,6 +82,20 @@ class TestShouldRetry(unittest.TestCase):
         exc = ue.URLError('network unreachable')
         self.assertTrue(_should_retry(exc))
 
+    def test_retries_on_bare_timeout_error(self):
+        # ``response.read()`` timeouts (e.g. the recurring "The read operation
+        # timed out" entries observed in logs/errors.jsonl) surface as bare
+        # ``TimeoutError``, NOT as ``URLError``, so without an explicit branch
+        # they bypass retry entirely and abort on the first attempt.
+        self.assertTrue(_should_retry(TimeoutError('The read operation timed out')))
+
+    def test_retries_on_socket_timeout(self):
+        import socket
+        # ``socket.timeout`` is an alias for ``TimeoutError`` on Python 3.10+;
+        # this assertion documents the intent and guards against any future
+        # divergence.
+        self.assertTrue(_should_retry(socket.timeout('timed out')))
+
     def test_does_not_retry_on_generic_exception(self):
         self.assertFalse(_should_retry(ValueError('bad value')))
 

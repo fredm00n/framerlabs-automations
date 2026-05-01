@@ -114,6 +114,51 @@ class TestLoadDotenv(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# _should_retry
+# ---------------------------------------------------------------------------
+
+class TestShouldRetry(unittest.TestCase):
+
+    def test_retries_on_429(self):
+        exc = urllib.error.HTTPError(None, 429, 'Too Many Requests', {}, None)
+        self.assertTrue(ft._should_retry(exc))
+
+    def test_retries_on_5xx(self):
+        for code in (500, 502, 503, 504):
+            with self.subTest(code=code):
+                exc = urllib.error.HTTPError(None, code, 'err', {}, None)
+                self.assertTrue(ft._should_retry(exc))
+
+    def test_does_not_retry_on_400(self):
+        exc = urllib.error.HTTPError(None, 400, 'Bad Request', {}, None)
+        self.assertFalse(ft._should_retry(exc))
+
+    def test_does_not_retry_on_404(self):
+        exc = urllib.error.HTTPError(None, 404, 'Not Found', {}, None)
+        self.assertFalse(ft._should_retry(exc))
+
+    def test_retries_on_url_error(self):
+        self.assertTrue(ft._should_retry(urllib.error.URLError('network unreachable')))
+
+    def test_retries_on_bare_timeout_error(self):
+        # ``response.read()`` timeouts surface as bare ``TimeoutError`` (==
+        # ``socket.timeout`` on Python 3.10+), NOT as ``URLError``.  The retry
+        # branch for ``TimeoutError`` ensures these transient failures are
+        # retried instead of bubbling out on the first attempt.
+        self.assertTrue(ft._should_retry(TimeoutError('The read operation timed out')))
+
+    def test_retries_on_socket_timeout(self):
+        import socket
+        # On Python 3.10+ ``socket.timeout`` is an alias for ``TimeoutError``
+        # but the assertion guards against future divergence and documents
+        # the intent for older interpreters.
+        self.assertTrue(ft._should_retry(socket.timeout('timed out')))
+
+    def test_does_not_retry_on_generic_exception(self):
+        self.assertFalse(ft._should_retry(ValueError('bad value')))
+
+
+# ---------------------------------------------------------------------------
 # fetch_from_rsc
 # ---------------------------------------------------------------------------
 

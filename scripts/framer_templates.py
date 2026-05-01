@@ -41,6 +41,13 @@ def _should_retry(exc: Exception) -> bool:
         return exc.code in (429, 500, 502, 503, 504)
     if isinstance(exc, urllib.error.URLError):
         return True  # network/connection errors
+    # Read timeouts raised after a connection is already established (e.g.
+    # during ``response.read()``) propagate as bare ``TimeoutError`` /
+    # ``socket.timeout``, NOT wrapped in ``URLError``.  Treat them as
+    # retriable so transient slow-network blips do not abort cleanly
+    # parseable single-call operations.
+    if isinstance(exc, TimeoutError):
+        return True
     return False
 
 
