@@ -15,6 +15,7 @@ from scripts.reddit_leads import (
     _is_valid_iso8601_date,
     _retry,
     _should_retry,
+    _truncate_for_notion,
     fetch_reddit_posts,
     get_lead_by_id,
     get_pending_leads,
@@ -529,6 +530,39 @@ class TestSaveLeadToNotion(unittest.TestCase):
         self.assertEqual(len(content_val), 2000)
 
     @patch('scripts.reddit_leads.http_post')
+    def test_content_with_supplementary_emoji_fits_notion_utf16_limit(self, mock_post):
+        """Content with supplementary-plane chars must fit Notion's UTF-16 limit.
+
+        Reproduces the 2026-04-29 r/smallbusiness 400 error where a Python
+        ``[:2000]`` slice yielded 2001 UTF-16 code units in Notion's count.
+        """
+        mock_post.return_value = {}
+        # U+1F600 = 1 code point, 2 UTF-16 code units
+        lead = {
+            'title': 'Test', 'url': 'https://reddit.com/1',
+            'subreddit': 'framer', 'content': '\U0001F600' * 1500, 'post_date': '',
+        }
+        save_lead_to_notion(lead, 'db-id')
+        props = mock_post.call_args[0][1]['properties']
+        content_val = props['Content']['rich_text'][0]['text']['content']
+        utf16_units = len(content_val.encode('utf-16-le')) // 2
+        self.assertLessEqual(utf16_units, 2000)
+
+    @patch('scripts.reddit_leads.http_post')
+    def test_title_with_supplementary_emoji_fits_notion_utf16_limit(self, mock_post):
+        """Title field must also be truncated UTF-16-aware."""
+        mock_post.return_value = {}
+        lead = {
+            'title': '\U0001F600' * 1500, 'url': 'https://reddit.com/1',
+            'subreddit': 'framer', 'content': 'short', 'post_date': '',
+        }
+        save_lead_to_notion(lead, 'db-id')
+        props = mock_post.call_args[0][1]['properties']
+        title_val = props['Name']['title'][0]['text']['content']
+        utf16_units = len(title_val.encode('utf-16-le')) // 2
+        self.assertLessEqual(utf16_units, 2000)
+
+    @patch('scripts.reddit_leads.http_post')
     def test_post_date_included_when_present(self, mock_post):
         mock_post.return_value = {}
         lead = {
@@ -825,6 +859,56 @@ class TestUpdateLeadStatus(unittest.TestCase):
         props = mock_patch.call_args[0][1]['properties']
         notes = props['Review Notes']['rich_text'][0]['text']['content']
         self.assertEqual(len(notes), 2000)
+
+    @patch('scripts.reddit_leads.http_patch')
+    def test_notes_with_supplementary_emoji_fits_notion_utf16_limit(self, mock_patch):
+        """Review notes with supplementary-plane chars must fit UTF-16 limit."""
+        mock_patch.return_value = {}
+        update_lead_status('page-xyz', 'approved', '\U0001F600' * 1500)
+        props = mock_patch.call_args[0][1]['properties']
+        notes = props['Review Notes']['rich_text'][0]['text']['content']
+        utf16_units = len(notes.encode('utf-16-le')) // 2
+        self.assertLessEqual(utf16_units, 2000)
+
+
+# ---------------------------------------------------------------------------
+# TestTruncateForNotion
+# ---------------------------------------------------------------------------
+
+class TestTruncateForNotion(unittest.TestCase):
+
+    def test_empty_string_returns_empty(self):
+        self.assertEqual(_truncate_for_notion(''), '')
+
+    def test_short_ascii_returned_unchanged(self):
+        self.assertEqual(_truncate_for_notion('hello'), 'hello')
+
+    def test_long_ascii_truncated_to_limit(self):
+        self.assertEqual(len(_truncate_for_notion('x' * 3000)), 2000)
+
+    def test_supplementary_chars_fit_utf16_limit(self):
+        # 1500 emoji = 1500 code points but 3000 UTF-16 code units
+        result = _truncate_for_notion('\U0001F600' * 1500)
+        utf16_units = len(result.encode('utf-16-le')) // 2
+        self.assertLessEqual(utf16_units, 2000)
+
+    def test_mixed_chars_fit_utf16_limit(self):
+        result = _truncate_for_notion(('a' * 1900) + ('\U0001F600' * 200))
+        utf16_units = len(result.encode('utf-16-le')) // 2
+        self.assertLessEqual(utf16_units, 2000)
+
+    def test_supplementary_chars_not_split_mid_surrogate(self):
+        """Result must not contain a lone surrogate from cutting an emoji in half."""
+        result = _truncate_for_notion('\U0001F600' * 1500)
+        # Re-encoding as UTF-8 should succeed without errors if no lone surrogates.
+        result.encode('utf-8')
+
+    def test_custom_limit(self):
+        self.assertEqual(len(_truncate_for_notion('x' * 100, limit=10)), 10)
+
+    def test_value_at_exact_limit_unchanged(self):
+        s = 'x' * 2000
+        self.assertEqual(_truncate_for_notion(s), s)
 
 
 # ---------------------------------------------------------------------------

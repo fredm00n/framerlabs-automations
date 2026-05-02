@@ -1359,6 +1359,74 @@ class TestSaveToNotion(unittest.TestCase):
         price_val = props['Price']['rich_text'][0]['text']['content']
         self.assertEqual(len(price_val), 2000)
 
+    def test_slug_truncated_to_2000(self):
+        """Slug rich_text field must be truncated to 2000 chars."""
+        t = {**_BASE_TEMPLATE, 'slug': 's' * 3000}
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.save_to_notion(t)
+        props = mock_post.call_args[0][1]['properties']
+        slug_val = props['Slug']['rich_text'][0]['text']['content']
+        self.assertEqual(len(slug_val), 2000)
+
+    def test_title_with_supplementary_emoji_fits_notion_utf16_limit(self):
+        """Title containing supplementary-plane chars must fit Notion's UTF-16 limit.
+
+        Notion counts UTF-16 code units, not Python code points.  A naive
+        ``[:2000]`` slice on a string of all-emoji would produce 2000 code
+        points / 4000 UTF-16 code units and trigger a 400 validation error.
+        """
+        # U+1F600 grinning face emoji = 1 code point, 2 UTF-16 code units
+        t = {**_BASE_TEMPLATE, 'title': '\U0001F600' * 1500}
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.save_to_notion(t)
+        props = mock_post.call_args[0][1]['properties']
+        name_val = props['Name']['title'][0]['text']['content']
+        utf16_units = len(name_val.encode('utf-16-le')) // 2
+        self.assertLessEqual(utf16_units, 2000)
+
+    def test_meta_title_with_mixed_supplementary_chars_fits_notion_limit(self):
+        """Mixed BMP + supplementary chars must still fit the UTF-16 limit."""
+        # 1900 ASCII chars + 200 emoji = 1900 + 400 = 2300 UTF-16 code units
+        t = {**_BASE_TEMPLATE, 'meta_title': ('a' * 1900) + ('\U0001F600' * 200)}
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.save_to_notion(t)
+        props = mock_post.call_args[0][1]['properties']
+        meta_val = props['Meta Title']['rich_text'][0]['text']['content']
+        utf16_units = len(meta_val.encode('utf-16-le')) // 2
+        self.assertLessEqual(utf16_units, 2000)
+
+
+class TestTruncateForNotion(unittest.TestCase):
+
+    def test_empty_string_returns_empty(self):
+        self.assertEqual(ft._truncate_for_notion(''), '')
+
+    def test_short_ascii_returned_unchanged(self):
+        self.assertEqual(ft._truncate_for_notion('hello'), 'hello')
+
+    def test_long_ascii_truncated_to_limit(self):
+        self.assertEqual(len(ft._truncate_for_notion('x' * 3000)), 2000)
+
+    def test_supplementary_chars_fit_utf16_limit(self):
+        # 1500 emoji = 1500 code points but 3000 UTF-16 code units
+        result = ft._truncate_for_notion('\U0001F600' * 1500)
+        utf16_units = len(result.encode('utf-16-le')) // 2
+        self.assertLessEqual(utf16_units, 2000)
+
+    def test_mixed_chars_fit_utf16_limit(self):
+        result = ft._truncate_for_notion(('a' * 1900) + ('\U0001F600' * 200))
+        utf16_units = len(result.encode('utf-16-le')) // 2
+        self.assertLessEqual(utf16_units, 2000)
+
+    def test_supplementary_chars_not_split_mid_surrogate(self):
+        """Result must not contain a lone surrogate from cutting an emoji in half."""
+        result = ft._truncate_for_notion('\U0001F600' * 1500)
+        # Re-encoding as UTF-8 should succeed without errors if no lone surrogates.
+        result.encode('utf-8')
+
+    def test_custom_limit(self):
+        self.assertEqual(len(ft._truncate_for_notion('x' * 100, limit=10)), 10)
+
 
 # ---------------------------------------------------------------------------
 # _build_embed
