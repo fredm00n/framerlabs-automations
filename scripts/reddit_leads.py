@@ -367,13 +367,39 @@ def _is_valid_iso8601_date(value: str) -> bool:
         return False
 
 
+def _truncate_for_notion(value: str, limit: int = 2000) -> str:
+    """Truncate *value* so its UTF-16 code-unit length is <= *limit*.
+
+    Notion's rich_text/title length validator counts UTF-16 code units, not
+    Python code points.  Supplementary Unicode characters (e.g. most emoji)
+    are 1 Python code point but 2 UTF-16 code units, so a Python ``[:2000]``
+    slice can yield a string Notion considers 2001+ chars long, causing a
+    400 ``validation_error`` (observed in ``logs/errors.jsonl`` on
+    2026-04-29 for r/smallbusiness).
+
+    We trim by repeatedly dropping the trailing code point until the UTF-16
+    encoding fits.  Returning a shorter (but valid) string is preferable to
+    a 400 that loses the entire lead.
+    """
+    if not value:
+        return value
+    # Fast path: most strings are pure BMP and will fit after a simple slice.
+    truncated = value[:limit]
+    while len(truncated.encode('utf-16-le')) // 2 > limit:
+        # Drop one code point at a time.  In practice this loops at most as
+        # many times as there are supplementary characters in the slice
+        # (typically 0-1 for Reddit content).
+        truncated = truncated[:-1]
+    return truncated
+
+
 def save_lead_to_notion(lead: dict, db_id: str) -> None:
     """Save a new lead to Notion with status 'pending'."""
     props: dict = {
-        'Name': {'title': [{'text': {'content': lead['title'][:2000]}}]},
+        'Name': {'title': [{'text': {'content': _truncate_for_notion(lead['title'])}}]},
         'URL': {'url': lead['url']},
         'Subreddit': {'select': {'name': lead['subreddit']}},
-        'Content': {'rich_text': [{'text': {'content': lead['content'][:2000]}}]},
+        'Content': {'rich_text': [{'text': {'content': _truncate_for_notion(lead['content'])}}]},
         'Status': {'select': {'name': 'pending'}},
         'Discovered': {'date': {'start': datetime.now(timezone.utc).isoformat()}},
     }
@@ -492,7 +518,7 @@ def update_lead_status(page_id: str, status: str, notes: str) -> None:
         {
             'properties': {
                 'Status': {'select': {'name': status}},
-                'Review Notes': {'rich_text': [{'text': {'content': notes[:2000]}}]},
+                'Review Notes': {'rich_text': [{'text': {'content': _truncate_for_notion(notes)}}]},
             }
         },
         headers=notion_headers(),

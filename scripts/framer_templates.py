@@ -100,6 +100,30 @@ def notion_headers() -> dict:
     }
 
 
+def _truncate_for_notion(value: str, limit: int = 2000) -> str:
+    """Truncate *value* so its UTF-16 code-unit length is <= *limit*.
+
+    Notion's rich_text/title length validator counts UTF-16 code units, not
+    Python code points.  Supplementary Unicode characters (e.g. most emoji)
+    are 1 Python code point but 2 UTF-16 code units, so a Python ``[:2000]``
+    slice can yield a string Notion considers 2001+ chars long, causing a
+    400 ``validation_error`` (observed in ``logs/errors.jsonl`` on
+    2026-04-29 for r/smallbusiness in ``reddit_leads.py`` — the same defect
+    pattern would apply here for any template title/author/price field that
+    contains a supplementary character near the limit).
+
+    We trim by repeatedly dropping the trailing code point until the UTF-16
+    encoding fits.  Returning a shorter (but valid) string is preferable to
+    a 400 that loses the entire entry.
+    """
+    if not value:
+        return value
+    truncated = value[:limit]
+    while len(truncated.encode('utf-16-le')) // 2 > limit:
+        truncated = truncated[:-1]
+    return truncated
+
+
 # ---------------------------------------------------------------------------
 # Fetching & parsing
 # ---------------------------------------------------------------------------
@@ -518,16 +542,16 @@ def get_seen_slugs() -> set[str]:
 
 def save_to_notion(template: dict) -> None:
     props: dict = {
-        'Name': {'title': [{'text': {'content': template['title'][:2000]}}]},
-        'Slug': {'rich_text': [{'text': {'content': template['slug'][:2000]}}]},
+        'Name': {'title': [{'text': {'content': _truncate_for_notion(template['title'])}}]},
+        'Slug': {'rich_text': [{'text': {'content': _truncate_for_notion(template['slug'])}}]},
         'URL': {'url': template['url']},
-        'Author': {'rich_text': [{'text': {'content': template.get('author', '')[:2000]}}]},
-        'Price': {'rich_text': [{'text': {'content': template.get('price', '')[:2000]}}]},
+        'Author': {'rich_text': [{'text': {'content': _truncate_for_notion(template.get('author', ''))}}]},
+        'Price': {'rich_text': [{'text': {'content': _truncate_for_notion(template.get('price', ''))}}]},
         'Discovered': {'date': {'start': datetime.now(timezone.utc).isoformat()}},
         'Category': {'select': {'name': infer_category(template)}},
     }
     if template.get('meta_title'):
-        props['Meta Title'] = {'rich_text': [{'text': {'content': template['meta_title'][:2000]}}]}
+        props['Meta Title'] = {'rich_text': [{'text': {'content': _truncate_for_notion(template['meta_title'])}}]}
     if template.get('demo_url'):
         props['Demo URL'] = {'url': template['demo_url']}
     if template.get('remixes'):
