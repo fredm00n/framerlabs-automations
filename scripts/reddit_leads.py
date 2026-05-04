@@ -538,8 +538,16 @@ def mark_notified(page_id: str) -> None:
 # Discord
 # ---------------------------------------------------------------------------
 
-def notify_discord_lead(lead: dict) -> None:
-    """Send a Discord embed for an approved lead."""
+def notify_discord_lead(lead: dict) -> bool:
+    """Send a Discord embed for an approved lead.
+
+    Returns True if the webhook POST succeeded, False otherwise.  The
+    exception is still swallowed (and logged) so callers do not need a
+    try/except, but the return value lets the ``--notify`` CLI avoid
+    flipping the Notion ``Notified`` checkbox when Discord is down — a
+    silent failure there would mean the lead never reaches the channel
+    yet is treated as delivered, so it would never be retried.
+    """
     review_notes = lead.get('review_notes', '')
     description = f"**Why this is a lead:** {review_notes}" if review_notes else ''
     embed = {
@@ -551,6 +559,7 @@ def notify_discord_lead(lead: dict) -> None:
     }
     try:
         http_post(os.environ['DISCORD_WEBHOOK_URL_LEADS'], {'embeds': [embed]})
+        return True
     except Exception as e:
         print(f'Discord notification failed for "{lead["title"]}": {e}')
         error_log.log_error(
@@ -558,6 +567,7 @@ def notify_discord_lead(lead: dict) -> None:
             f'Discord notification failed for "{lead["title"]}"',
             {'error': str(e), 'url': lead.get('url', ''), 'subreddit': lead.get('subreddit', '')},
         )
+        return False
 
 
 def _warn_discord(message: str) -> None:
@@ -711,32 +721,49 @@ def main() -> None:
 # CLI interface for the daily reviewer session (REDDIT_LEADS_REVIEWER.md)
 # ---------------------------------------------------------------------------
 
-if __name__ == '__main__':
-    args = sys.argv[1:]
+def cli(args: list[str]) -> None:
+    """Dispatch a CLI invocation.
 
+    Extracted from the ``__main__`` block so the dispatch logic can be unit
+    tested without ``runpy.run_path`` re-importing the module (which would
+    break ``unittest.mock`` patches against ``scripts.reddit_leads.*``).
+    """
     if not args:
         main()
+        return
 
-    elif args[0] == '--list-pending':
+    if args[0] == '--list-pending':
         load_dotenv()
         leads = get_pending_leads(os.environ['NOTION_REDDIT_LEADS_DB_ID'])
         print(json.dumps(leads, indent=2))
+        return
 
-    elif args[0] == '--update-status' and len(args) >= 4:
+    if args[0] == '--update-status' and len(args) >= 4:
         load_dotenv()
         page_id, status = args[1], args[2]
         notes = ' '.join(args[3:])
         update_lead_status(page_id, status, notes)
         print(f'Updated {page_id} → {status}')
+        return
 
-    elif args[0] == '--notify' and len(args) >= 2:
+    if args[0] == '--notify' and len(args) >= 2:
         load_dotenv()
         page_id = args[1]
         lead = get_lead_by_id(page_id)
-        notify_discord_lead(lead)
+        # Only mark the page as Notified after Discord has accepted the
+        # webhook — otherwise a failed POST would still flip the checkbox
+        # and the lead would silently never reach the channel nor be
+        # retried on the next reviewer run.
+        if not notify_discord_lead(lead):
+            print(f'Notify failed for {page_id} — leaving Notified checkbox unset', file=sys.stderr)
+            raise SystemExit(1)
         mark_notified(page_id)
         print(f'Notified: {lead["title"]}')
+        return
 
-    else:
-        print(f'Unknown arguments: {args}', file=sys.stderr)
-        raise SystemExit(1)
+    print(f'Unknown arguments: {args}', file=sys.stderr)
+    raise SystemExit(1)
+
+
+if __name__ == '__main__':
+    cli(sys.argv[1:])
