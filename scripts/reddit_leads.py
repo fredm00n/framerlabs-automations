@@ -619,6 +619,29 @@ def main() -> None:
             try:
                 if url_exists_in_notion(post['url'], db_id):
                     continue
+            except urllib.error.HTTPError as e:
+                # Capture the Notion API response body to help diagnose recurring
+                # 404s (deleted DB? integration access revoked? transient
+                # outage?).  Without this, the log only shows ``"HTTP Error 404:
+                # Not Found"`` which gives no signal about which of those causes
+                # is at play.  Mirrors the pattern used by save_lead_to_notion.
+                notion_response = ''
+                try:
+                    notion_response = e.read().decode('utf-8', errors='replace')[:500]
+                except Exception:
+                    pass
+                print(f'Error checking dedup for r/{subreddit}: {e}')
+                error_log.log_error(
+                    'reddit_leads', 'warning',
+                    f'Dedup check failed for r/{subreddit} — skipping post',
+                    {
+                        'url': post['url'],
+                        'status': e.code,
+                        'error': str(e),
+                        'notion_response': notion_response,
+                    },
+                )
+                continue  # skip this post; do not attempt to save or write sentinel
             except Exception as e:
                 print(f'Error checking dedup for r/{subreddit}: {e}')
                 error_log.log_error(

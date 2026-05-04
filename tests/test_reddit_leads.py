@@ -1261,6 +1261,98 @@ class TestMain(unittest.TestCase):
         self.assertIn('url', ctx)
         self.assertIn('https://reddit.com/r/forhire/dedup-fail', ctx['url'])
 
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+    })
+    @patch('scripts.reddit_leads.save_failed_sentinel_to_notion')
+    @patch('scripts.reddit_leads.save_lead_to_notion')
+    @patch('scripts.reddit_leads.fetch_reddit_posts')
+    def test_dedup_http_error_logs_notion_response_body(
+        self, mock_fetch, mock_save, mock_sentinel,
+    ):
+        """When dedup-check raises an HTTPError, the Notion response body must be logged.
+
+        This mirrors the pattern in save_lead_to_notion and is needed to diagnose
+        the recurring HTTP 404s observed for url_exists_in_notion in
+        logs/errors.jsonl: a 404 alone could be a deleted DB, a revoked
+        integration, or a transient Notion outage; only the response body shows
+        which.
+        """
+        import io
+        import error_log as el
+        body = (
+            b'{"object":"error","status":404,"code":"object_not_found",'
+            b'"message":"Could not find database with ID: db-test."}'
+        )
+        http_err = urllib.error.HTTPError(
+            'https://api.notion.com/v1/databases/db-test/query',
+            404, 'Not Found', {}, io.BytesIO(body),
+        )
+        mock_fetch.return_value = [{
+            'title': '[HIRING] Need a Framer developer',
+            'url': 'https://reddit.com/r/forhire/dedup-http-404',
+            'subreddit': 'forhire',
+            'content': 'Budget $500 for landing page website',
+            'post_date': '2024-03-01T10:00:00+00:00',
+        }]
+        with patch('scripts.reddit_leads.url_exists_in_notion', side_effect=http_err), \
+             patch.object(el, 'log_error') as mock_log:
+            from scripts.reddit_leads import main
+            main()
+        dedup_calls = [
+            c for c in mock_log.call_args_list
+            if 'dedup' in (c[0][2] if len(c[0]) > 2 else '').lower()
+        ]
+        self.assertTrue(len(dedup_calls) >= 1, 'Expected at least one dedup warning log entry')
+        # Severity is still 'warning' (HTTPError is a transient/skip case here)
+        self.assertEqual(dedup_calls[0][0][1], 'warning')
+        ctx = dedup_calls[0][0][3]
+        self.assertEqual(ctx.get('status'), 404)
+        self.assertIn('notion_response', ctx)
+        self.assertIn('object_not_found', ctx['notion_response'])
+        # Response body is truncated to 500 chars
+        self.assertLessEqual(len(ctx['notion_response']), 500)
+        # save_lead_to_notion must not be called when dedup fails
+        mock_save.assert_not_called()
+        mock_sentinel.assert_not_called()
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+    })
+    @patch('scripts.reddit_leads.save_failed_sentinel_to_notion')
+    @patch('scripts.reddit_leads.save_lead_to_notion')
+    @patch('scripts.reddit_leads.fetch_reddit_posts')
+    def test_dedup_non_http_error_still_logs_warning_without_status(
+        self, mock_fetch, mock_save, mock_sentinel,
+    ):
+        """A non-HTTP exception during dedup must still log a warning, but
+        without a 'status' or 'notion_response' field (they only apply to
+        HTTPError)."""
+        import error_log as el
+        mock_fetch.return_value = [{
+            'title': '[HIRING] Need a Framer developer',
+            'url': 'https://reddit.com/r/forhire/dedup-timeout',
+            'subreddit': 'forhire',
+            'content': 'Budget $500 for landing page website',
+            'post_date': '2024-03-01T10:00:00+00:00',
+        }]
+        with patch('scripts.reddit_leads.url_exists_in_notion',
+                   side_effect=TimeoutError('The read operation timed out')), \
+             patch.object(el, 'log_error') as mock_log:
+            from scripts.reddit_leads import main
+            main()
+        dedup_calls = [
+            c for c in mock_log.call_args_list
+            if 'dedup' in (c[0][2] if len(c[0]) > 2 else '').lower()
+        ]
+        self.assertTrue(len(dedup_calls) >= 1)
+        ctx = dedup_calls[0][0][3]
+        self.assertNotIn('status', ctx)
+        self.assertNotIn('notion_response', ctx)
+        self.assertIn('error', ctx)
+
 
 # ---------------------------------------------------------------------------
 # _write_summary
