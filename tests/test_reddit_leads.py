@@ -16,6 +16,7 @@ from scripts.reddit_leads import (
     _retry,
     _should_retry,
     _truncate_for_notion,
+    cli,
     fetch_reddit_posts,
     get_lead_by_id,
     get_pending_leads,
@@ -972,8 +973,20 @@ class TestNotifyDiscordLead(unittest.TestCase):
     @patch('scripts.reddit_leads.http_post', side_effect=Exception('webhook down'))
     def test_swallows_exception(self, mock_post):
         lead = {'title': 'Test', 'url': 'https://x.com', 'subreddit': 'framer', 'content': ''}
-        # Should not raise
-        notify_discord_lead(lead)
+        # Should not raise; should report failure to caller via False return.
+        self.assertFalse(notify_discord_lead(lead))
+
+    @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
+    @patch('scripts.reddit_leads.http_post')
+    def test_returns_true_on_success(self, mock_post):
+        mock_post.return_value = {}
+        lead = {
+            'title': 'Hiring Framer dev',
+            'url': 'https://reddit.com/r/forhire/1',
+            'subreddit': 'forhire',
+            'content': '',
+        }
+        self.assertTrue(notify_discord_lead(lead))
 
     @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
     @patch('scripts.reddit_leads.http_post', side_effect=Exception('webhook down'))
@@ -1009,6 +1022,40 @@ class TestMarkNotified(unittest.TestCase):
         body = mock_patch.call_args[0][1]
         self.assertIn('page-abc', url)
         self.assertTrue(body['properties']['Notified']['checkbox'])
+
+
+# ---------------------------------------------------------------------------
+# TestNotifyCli — the --notify CLI handler must not flip the Notified
+# checkbox when the Discord webhook fails, otherwise the lead is silently
+# lost (never delivered, never retried).
+# ---------------------------------------------------------------------------
+
+class TestNotifyCli(unittest.TestCase):
+
+    @patch('scripts.reddit_leads.load_dotenv')
+    @patch('scripts.reddit_leads.mark_notified')
+    @patch('scripts.reddit_leads.notify_discord_lead', return_value=True)
+    @patch('scripts.reddit_leads.get_lead_by_id', return_value={
+        'page_id': 'page-1', 'title': 'T', 'url': 'u', 'subreddit': 's', 'content': '',
+    })
+    def test_marks_notified_when_discord_succeeds(self, mock_get, mock_notify, mock_mark, mock_env):
+        cli(['--notify', 'page-1'])
+        mock_notify.assert_called_once()
+        mock_mark.assert_called_once_with('page-1')
+
+    @patch('scripts.reddit_leads.load_dotenv')
+    @patch('scripts.reddit_leads.mark_notified')
+    @patch('scripts.reddit_leads.notify_discord_lead', return_value=False)
+    @patch('scripts.reddit_leads.get_lead_by_id', return_value={
+        'page_id': 'page-1', 'title': 'T', 'url': 'u', 'subreddit': 's', 'content': '',
+    })
+    def test_does_not_mark_notified_when_discord_fails(self, mock_get, mock_notify, mock_mark, mock_env):
+        with self.assertRaises(SystemExit) as cm:
+            cli(['--notify', 'page-1'])
+        # Non-zero exit so the reviewer session knows the notify failed.
+        self.assertNotEqual(cm.exception.code, 0)
+        mock_notify.assert_called_once()
+        mock_mark.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
