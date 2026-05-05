@@ -1400,6 +1400,146 @@ class TestMain(unittest.TestCase):
         self.assertNotIn('notion_response', ctx)
         self.assertIn('error', ctx)
 
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+        'DISCORD_ALERTS_WEBHOOK_URL': 'https://discord.com/alerts',
+    })
+    @patch('scripts.reddit_leads.save_failed_sentinel_to_notion')
+    @patch('scripts.reddit_leads.save_lead_to_notion')
+    @patch('scripts.reddit_leads._warn_discord')
+    @patch('scripts.reddit_leads.fetch_reddit_posts')
+    def test_dedup_object_not_found_triggers_alert(
+        self, mock_fetch, mock_warn, mock_save, mock_sentinel,
+    ):
+        """A single ``object_not_found`` from Notion must fire an ERROR-level
+        Discord alert — the misconfiguration would otherwise silently halt
+        every lead save."""
+        import io
+        body = (
+            b'{"object":"error","status":404,"code":"object_not_found",'
+            b'"message":"Could not find database with ID: db-test."}'
+        )
+        http_err = urllib.error.HTTPError(
+            'https://api.notion.com/v1/databases/db-test/query',
+            404, 'Not Found', {}, io.BytesIO(body),
+        )
+        mock_fetch.return_value = [{
+            'title': '[HIRING] Need a Framer developer',
+            'url': 'https://reddit.com/r/forhire/abc',
+            'subreddit': 'forhire',
+            'content': 'Budget $500 for landing page website',
+            'post_date': '2024-03-01T10:00:00+00:00',
+        }]
+        # Each call must raise a fresh HTTPError (body stream is consumed once).
+        def fresh_http_err(*_a, **_kw):
+            raise urllib.error.HTTPError(
+                'https://api.notion.com/v1/databases/db-test/query',
+                404, 'Not Found', {}, io.BytesIO(body),
+            )
+        with patch('scripts.reddit_leads.url_exists_in_notion',
+                   side_effect=fresh_http_err):
+            from scripts.reddit_leads import main
+            main()
+        # The save path must never be reached when dedup fails.
+        mock_save.assert_not_called()
+        mock_sentinel.assert_not_called()
+        # An alert must have been sent and the message must mention object_not_found
+        # so an operator immediately sees the cause.
+        mock_warn.assert_called_once()
+        msg = mock_warn.call_args[0][0]
+        self.assertIn('object_not_found', msg)
+        self.assertIn('NOTION_REDDIT_LEADS_DB_ID', msg)
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+        'DISCORD_ALERTS_WEBHOOK_URL': 'https://discord.com/alerts',
+    })
+    @patch('scripts.reddit_leads.save_failed_sentinel_to_notion')
+    @patch('scripts.reddit_leads.save_lead_to_notion')
+    @patch('scripts.reddit_leads._warn_discord')
+    @patch('scripts.reddit_leads.fetch_reddit_posts')
+    def test_dedup_other_failures_below_threshold_no_alert(
+        self, mock_fetch, mock_warn, mock_save, mock_sentinel,
+    ):
+        """Non-``object_not_found`` dedup failures below the burst threshold
+        must not fire an alert (one transient timeout is normal noise)."""
+        # One filtered post per subreddit means one failure per subreddit; the
+        # majority-fetch warning would interfere, so let only the *first* feed
+        # return a post and the rest return [].
+        from scripts.reddit_leads import REDDIT_FEEDS
+        single_post = [{
+            'title': '[HIRING] Need a Framer developer',
+            'url': 'https://reddit.com/r/forhire/abc',
+            'subreddit': list(REDDIT_FEEDS.keys())[0],
+            'content': 'Budget $500 for landing page website',
+            'post_date': '2024-03-01T10:00:00+00:00',
+        }]
+        mock_fetch.side_effect = [single_post] + [[]] * (len(REDDIT_FEEDS) - 1)
+        with patch('scripts.reddit_leads.url_exists_in_notion',
+                   side_effect=TimeoutError('The read operation timed out')):
+            from scripts.reddit_leads import main
+            main()
+        mock_warn.assert_not_called()
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+        'DISCORD_ALERTS_WEBHOOK_URL': 'https://discord.com/alerts',
+    })
+    @patch('scripts.reddit_leads.save_failed_sentinel_to_notion')
+    @patch('scripts.reddit_leads.save_lead_to_notion')
+    @patch('scripts.reddit_leads._warn_discord')
+    @patch('scripts.reddit_leads.fetch_reddit_posts')
+    def test_dedup_other_failures_at_threshold_warns(
+        self, mock_fetch, mock_warn, mock_save, mock_sentinel,
+    ):
+        """A burst of >=5 non-``object_not_found`` dedup failures must fire a
+        WARNING-level alert, but not the object_not_found-specific ERROR text."""
+        from scripts.reddit_leads import REDDIT_FEEDS, _DEDUP_OTHER_FAILURE_ALERT_THRESHOLD
+        # Make at least the threshold-many subreddits each yield one filtered
+        # post; the rest return [].  Threshold is 5.
+        n_failing = max(_DEDUP_OTHER_FAILURE_ALERT_THRESHOLD, 5)
+        feed_iter = iter(REDDIT_FEEDS.keys())
+        failing_feeds = []
+        for _ in range(n_failing):
+            failing_feeds.append([{
+                'title': '[HIRING] Need a Framer developer',
+                'url': f'https://reddit.com/{next(feed_iter)}/abc',
+                'subreddit': 'forhire',
+                'content': 'Budget $500 for landing page website',
+                'post_date': '2024-03-01T10:00:00+00:00',
+            }])
+        mock_fetch.side_effect = failing_feeds + [[]] * (len(REDDIT_FEEDS) - n_failing)
+        with patch('scripts.reddit_leads.url_exists_in_notion',
+                   side_effect=TimeoutError('The read operation timed out')):
+            from scripts.reddit_leads import main
+            main()
+        mock_warn.assert_called_once()
+        msg = mock_warn.call_args[0][0]
+        self.assertIn('dedup-check failure', msg)
+        # Must not be the object_not_found-specific message.
+        self.assertNotIn('object_not_found', msg)
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+        'DISCORD_ALERTS_WEBHOOK_URL': 'https://discord.com/alerts',
+    })
+    @patch('scripts.reddit_leads.save_failed_sentinel_to_notion')
+    @patch('scripts.reddit_leads.save_lead_to_notion')
+    @patch('scripts.reddit_leads._warn_discord')
+    @patch('scripts.reddit_leads.url_exists_in_notion', return_value=False)
+    @patch('scripts.reddit_leads.fetch_reddit_posts', return_value=[])
+    def test_no_dedup_alert_when_no_dedup_errors(
+        self, mock_fetch, mock_exists, mock_warn, mock_save, mock_sentinel,
+    ):
+        """Healthy run (zero dedup failures) must not emit any dedup alert."""
+        from scripts.reddit_leads import main
+        main()
+        mock_warn.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # _write_summary
