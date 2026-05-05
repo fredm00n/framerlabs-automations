@@ -599,6 +599,22 @@ def _write_summary(text: str) -> None:
 # Main monitoring flow
 # ---------------------------------------------------------------------------
 
+# When dedup-check failures meet or exceed this threshold within a single run,
+# emit a Discord alert.  The thresholds are split because the failure modes
+# are very different:
+#   * A Notion ``object_not_found`` 404 is almost always a permanent
+#     misconfiguration (deleted DB, integration access revoked, wrong DB id
+#     in the secret) — every subsequent post will silently skip its dedup
+#     check, no leads will be saved, and operators won't notice until the
+#     lead flow dries up days later.  Alert on the first occurrence so the
+#     misconfiguration surfaces immediately.
+#   * Other dedup failures (transient network errors, read timeouts, generic
+#     5xx) are individually OK to skip but a sustained burst within a single
+#     run also warrants a heads-up.
+_DEDUP_OBJECT_NOT_FOUND_ALERT_THRESHOLD = 1
+_DEDUP_OTHER_FAILURE_ALERT_THRESHOLD = 5
+
+
 def main() -> None:
     load_dotenv()
 
@@ -610,6 +626,12 @@ def main() -> None:
     db_id = os.environ['NOTION_REDDIT_LEADS_DB_ID']
     total_saved = 0
     fetch_errors = 0
+    dedup_errors = 0
+    dedup_object_not_found_errors = 0
+    # Sample of dedup-failure context (subreddit + status code or error type),
+    # surfaced in the Discord alert so an operator can see the most-likely root
+    # cause without opening the log file.  Capped to keep the alert readable.
+    dedup_error_samples: list[str] = []
 
     for i, (subreddit, feed_url) in enumerate(REDDIT_FEEDS.items()):
         if i > 0:
@@ -651,6 +673,16 @@ def main() -> None:
                         'notion_response': notion_response,
                     },
                 )
+                dedup_errors += 1
+                # Treat ``object_not_found`` specially: it means the configured
+                # NOTION_REDDIT_LEADS_DB_ID is invalid / not shared with the
+                # integration, so every dedup check for the rest of the run
+                # will fail the same way.  Tracked separately so a single
+                # occurrence is enough to fire the alert.
+                if 'object_not_found' in notion_response:
+                    dedup_object_not_found_errors += 1
+                if len(dedup_error_samples) < 5:
+                    dedup_error_samples.append(f'r/{subreddit} HTTP {e.code}')
                 continue  # skip this post; do not attempt to save or write sentinel
             except Exception as e:
                 print(f'Error checking dedup for r/{subreddit}: {e}')
@@ -659,6 +691,9 @@ def main() -> None:
                     f'Dedup check failed for r/{subreddit} — skipping post',
                     {'url': post['url'], 'error': str(e)},
                 )
+                dedup_errors += 1
+                if len(dedup_error_samples) < 5:
+                    dedup_error_samples.append(f'r/{subreddit} {type(e).__name__}')
                 continue  # skip this post; do not attempt to save or write sentinel
             try:
                 save_lead_to_notion(post, db_id)
@@ -708,6 +743,43 @@ def main() -> None:
             'reddit_leads', 'warning',
             f'Majority of subreddit feeds failed ({fetch_errors}/{len(REDDIT_FEEDS)})',
             {'fetch_errors': fetch_errors, 'feed_count': len(REDDIT_FEEDS)},
+        )
+
+    # Dedup-check failure alerting: dedup failures cause every affected post to
+    # be silently skipped (no save attempted, no sentinel written).  In normal
+    # operation they should be 0; a sustained burst within a single run almost
+    # always means Notion is misconfigured (deleted DB, revoked integration,
+    # bad secret) and the script will save no new leads until fixed.  See the
+    # 2026-05-04 incident in logs/errors.jsonl for an example.
+    if dedup_object_not_found_errors >= _DEDUP_OBJECT_NOT_FOUND_ALERT_THRESHOLD:
+        sample_str = '; '.join(dedup_error_samples) if dedup_error_samples else 'none'
+        _warn_discord(
+            f'ERROR: reddit_leads.py — Notion dedup check returned object_not_found'
+            f' (DB likely deleted, renamed, or no longer shared with the integration).'
+            f' {dedup_errors} dedup failure(s) this run. Samples: {sample_str}.'
+            ' All affected posts skipped. Check logs/errors.jsonl and the'
+            ' NOTION_REDDIT_LEADS_DB_ID secret.'
+        )
+        error_log.log_error(
+            'reddit_leads', 'error',
+            'Notion dedup check returned object_not_found — DB likely misconfigured',
+            {
+                'dedup_errors': dedup_errors,
+                'dedup_object_not_found_errors': dedup_object_not_found_errors,
+                'samples': dedup_error_samples,
+            },
+        )
+    elif dedup_errors >= _DEDUP_OTHER_FAILURE_ALERT_THRESHOLD:
+        sample_str = '; '.join(dedup_error_samples) if dedup_error_samples else 'none'
+        _warn_discord(
+            f'WARNING: reddit_leads.py — {dedup_errors} dedup-check failure(s) this run.'
+            f' Samples: {sample_str}. Affected posts skipped (no sentinel written).'
+            ' Check logs/errors.jsonl.'
+        )
+        error_log.log_error(
+            'reddit_leads', 'warning',
+            f'{dedup_errors} dedup-check failure(s) in single run',
+            {'dedup_errors': dedup_errors, 'samples': dedup_error_samples},
         )
 
     print(f'Done. Saved {total_saved} new lead(s). ({fetch_errors} subreddit(s) unreachable)')
