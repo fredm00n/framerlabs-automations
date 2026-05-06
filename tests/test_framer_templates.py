@@ -2143,6 +2143,65 @@ class TestPostToX(unittest.TestCase):
              patch('framer_templates.http_post', side_effect=Exception('network')):
             ft.post_to_x([_template()])  # must not raise
 
+    def test_http_error_logs_twitter_response_body(self):
+        """HTTPError on Twitter POST captures the API response body for diagnosis.
+
+        Twitter's API returns very different bodies for each failure class
+        (expired token vs duplicate tweet vs content-policy rejection), and the
+        bare ``HTTP Error 401: Unauthorized`` string we log otherwise gives no
+        signal about which one occurred.  Mirrors the pattern used by
+        ``save_to_notion`` / ``url_exists_in_notion``.
+        """
+        import io
+        response_body = b'{"title":"Forbidden","detail":"You are not permitted to perform this action."}'
+        error = urllib.error.HTTPError(
+            None, 403, 'Forbidden', {}, io.BytesIO(response_body)
+        )
+        with patch.dict('os.environ', self._CRED_ENV), \
+             patch('framer_templates.http_post', side_effect=error), \
+             patch('error_log.log_error') as mock_log:
+            ft.post_to_x([_template()])
+        mock_log.assert_called_once()
+        ctx = mock_log.call_args[0][3]  # positional context dict
+        self.assertEqual(ctx['status'], 403)
+        self.assertIn('twitter_response', ctx)
+        self.assertIn('You are not permitted', ctx['twitter_response'])
+        # tweet_length and error string remain so existing diagnostics still work
+        self.assertIn('tweet_length', ctx)
+        self.assertIn('error', ctx)
+
+    def test_http_error_truncates_long_response_body(self):
+        """Twitter response body is capped at 500 chars to keep logs readable."""
+        import io
+        response_body = ('{"errors":[{"message":"' + ('x' * 1000) + '"}]}').encode()
+        error = urllib.error.HTTPError(
+            None, 401, 'Unauthorized', {}, io.BytesIO(response_body)
+        )
+        with patch.dict('os.environ', self._CRED_ENV), \
+             patch('framer_templates.http_post', side_effect=error), \
+             patch('error_log.log_error') as mock_log:
+            ft.post_to_x([_template()])
+        ctx = mock_log.call_args[0][3]
+        self.assertLessEqual(len(ctx['twitter_response']), 500)
+
+    def test_non_http_error_keeps_lighter_context(self):
+        """A non-HTTP exception (e.g. timeout) still logs the lighter context.
+
+        We don't try to read a body from something that isn't an HTTPError —
+        only HTTPError exposes ``.read()`` to capture the API response.
+        """
+        with patch.dict('os.environ', self._CRED_ENV), \
+             patch('framer_templates.http_post', side_effect=TimeoutError('read timeout')), \
+             patch('error_log.log_error') as mock_log:
+            ft.post_to_x([_template()])
+        mock_log.assert_called_once()
+        ctx = mock_log.call_args[0][3]
+        # Non-HTTP path keeps the original context shape — no twitter_response key
+        self.assertNotIn('twitter_response', ctx)
+        self.assertNotIn('status', ctx)
+        self.assertIn('error', ctx)
+        self.assertIn('tweet_length', ctx)
+
 
 class TestHttpRetry(unittest.TestCase):
     """_retry backs off and re-raises on transient HTTP errors."""
