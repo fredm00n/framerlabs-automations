@@ -818,6 +818,29 @@ def post_to_x(templates: list[dict]) -> None:
             headers={'Authorization': auth_header},
         )
         print(f'Posted to X: {tweet_text[:80]}...')
+    except urllib.error.HTTPError as e:
+        # Capture the Twitter API response body so an operator can distinguish
+        # between expired tokens (401), duplicate-content rejections (403),
+        # rate-limiting (429), and the various other failure modes that all
+        # otherwise log only ``"HTTP Error <code>: <reason>"`` with no actionable
+        # signal.  Mirrors the same diagnostic pattern used by
+        # ``save_to_notion`` / ``url_exists_in_notion`` / ``fetch_reddit_posts``.
+        twitter_response = ''
+        try:
+            twitter_response = e.read().decode('utf-8', errors='replace')[:500]
+        except Exception:
+            pass
+        print(f'Failed to post to X: {e}')
+        error_log.log_error(
+            'framer_templates', 'warning',
+            'Failed to post to X/Twitter',
+            {
+                'status': e.code,
+                'error': str(e),
+                'tweet_length': len(tweet_text),
+                'twitter_response': twitter_response,
+            },
+        )
     except Exception as e:
         print(f'Failed to post to X: {e}')
         error_log.log_error(
