@@ -1913,6 +1913,120 @@ class TestMain(unittest.TestCase):
                 ft.main()
         mock_slugs.assert_not_called()
 
+    def test_get_seen_slugs_http_error_sends_discord_alert(self):
+        """HTTPError from get_seen_slugs (e.g. Notion 404 / 401) must trigger a Discord alert."""
+        import io
+        http_err = urllib.error.HTTPError(
+            None, 404, 'Not Found', {},
+            io.BytesIO(b'{"object":"error","code":"object_not_found",'
+                       b'"message":"Could not find database"}'),
+        )
+        with patch('framer_templates.fetch_framer_templates', return_value=_TEMPLATES), \
+             patch('framer_templates.get_seen_slugs', side_effect=http_err), \
+             patch('framer_templates._warn_discord') as warn_mock, \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            with self.assertRaises(SystemExit):
+                ft.main()
+        # _warn_discord may also have been called for "<5 templates" warning if
+        # _TEMPLATES has fewer than 5 entries; find the get_seen_slugs alert.
+        alert_calls = [
+            c for c in warn_mock.call_args_list
+            if 'get_seen_slugs' in c[0][0]
+        ]
+        self.assertTrue(alert_calls, 'Expected a _warn_discord call mentioning get_seen_slugs')
+        msg = alert_calls[0][0][0]
+        self.assertIn('ERROR', msg)
+        self.assertIn('404', msg)
+
+    def test_get_seen_slugs_http_error_logs_notion_response(self):
+        """HTTPError from get_seen_slugs must capture the Notion response body in the error log."""
+        import error_log as el
+        import io
+        body = (b'{"object":"error","code":"object_not_found",'
+                b'"message":"Could not find database with ID: xyz"}')
+        http_err = urllib.error.HTTPError(None, 404, 'Not Found', {}, io.BytesIO(body))
+        with patch('framer_templates.fetch_framer_templates', return_value=_TEMPLATES), \
+             patch('framer_templates.get_seen_slugs', side_effect=http_err), \
+             patch('framer_templates._warn_discord'), \
+             patch.object(el, 'log_error') as mock_log, \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            with self.assertRaises(SystemExit):
+                ft.main()
+        slug_err_calls = [
+            c for c in mock_log.call_args_list
+            if len(c[0]) >= 4 and isinstance(c[0][3], dict)
+            and c[0][3].get('notion_response')
+        ]
+        self.assertTrue(slug_err_calls, 'Expected log_error call with notion_response context')
+        ctx = slug_err_calls[0][0][3]
+        self.assertEqual(ctx['status'], 404)
+        self.assertIn('Could not find database', ctx['notion_response'])
+
+    def test_get_seen_slugs_http_error_exits_nonzero(self):
+        """HTTPError from get_seen_slugs must exit non-zero so GitHub Actions surfaces failure."""
+        import io
+        http_err = urllib.error.HTTPError(None, 401, 'Unauthorized', {}, io.BytesIO(b'{}'))
+        with patch('framer_templates.fetch_framer_templates', return_value=_TEMPLATES), \
+             patch('framer_templates.get_seen_slugs', side_effect=http_err), \
+             patch('framer_templates._warn_discord'), \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            with self.assertRaises(SystemExit) as ctx:
+                ft.main()
+        self.assertNotEqual(ctx.exception.code, 0)
+
+    def test_get_seen_slugs_http_error_does_not_call_save(self):
+        """HTTPError from get_seen_slugs must short-circuit before any save/notify happens."""
+        import io
+        http_err = urllib.error.HTTPError(None, 404, 'Not Found', {}, io.BytesIO(b'{}'))
+        save_mock = MagicMock()
+        notify_mock = MagicMock()
+        with patch('framer_templates.fetch_framer_templates', return_value=_TEMPLATES), \
+             patch('framer_templates.get_seen_slugs', side_effect=http_err), \
+             patch('framer_templates.save_to_notion', save_mock), \
+             patch('framer_templates.notify_discord_batch', notify_mock), \
+             patch('framer_templates.post_to_x'), \
+             patch('framer_templates._warn_discord'), \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            with self.assertRaises(SystemExit):
+                ft.main()
+        save_mock.assert_not_called()
+        notify_mock.assert_not_called()
+
+    def test_get_seen_slugs_generic_exception_sends_discord_alert(self):
+        """Non-HTTP exception from get_seen_slugs must also trigger a Discord alert and exit."""
+        with patch('framer_templates.fetch_framer_templates', return_value=_TEMPLATES), \
+             patch('framer_templates.get_seen_slugs',
+                   side_effect=urllib.error.URLError('connection refused')), \
+             patch('framer_templates._warn_discord') as warn_mock, \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            with self.assertRaises(SystemExit):
+                ft.main()
+        alert_calls = [
+            c for c in warn_mock.call_args_list
+            if 'get_seen_slugs' in c[0][0]
+        ]
+        self.assertTrue(alert_calls, 'Expected a _warn_discord call mentioning get_seen_slugs')
+        self.assertIn('ERROR', alert_calls[0][0][0])
+
+    def test_get_seen_slugs_generic_exception_logs_error(self):
+        """Non-HTTP exception from get_seen_slugs must be written to the error log at error severity."""
+        import error_log as el
+        with patch('framer_templates.fetch_framer_templates', return_value=_TEMPLATES), \
+             patch('framer_templates.get_seen_slugs',
+                   side_effect=Exception('unexpected')), \
+             patch('framer_templates._warn_discord'), \
+             patch.object(el, 'log_error') as mock_log, \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            with self.assertRaises(SystemExit):
+                ft.main()
+        # Find the get_seen_slugs error log entry (severity='error')
+        seen_slugs_calls = [
+            c for c in mock_log.call_args_list
+            if len(c[0]) >= 3 and 'get_seen_slugs' in c[0][2]
+        ]
+        self.assertTrue(seen_slugs_calls, 'Expected an error_log entry for get_seen_slugs failure')
+        self.assertEqual(seen_slugs_calls[0][0][1], 'error')
+
 
 # ---------------------------------------------------------------------------
 # _warn_discord
