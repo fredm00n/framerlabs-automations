@@ -897,7 +897,47 @@ def main() -> None:
             f'WARNING: only {len(templates)} template(s) parsed from Framer RSC'
             ' — format may have changed. Check GitHub Actions logs.'
         )
-    seen_slugs = get_seen_slugs()
+    # Wrap the seen-slugs fetch so a Notion misconfiguration (deleted DB,
+    # revoked integration token, wrong NOTION_DATABASE_ID secret) surfaces
+    # as a Discord alert and an error-log entry instead of crashing the
+    # script silently with no operator-visible signal.  Mirrors the same
+    # pattern used for fetch_framer_templates above and the dedup
+    # object_not_found alerting in reddit_leads.py.
+    try:
+        seen_slugs = get_seen_slugs()
+    except urllib.error.HTTPError as e:
+        notion_response = ''
+        try:
+            notion_response = e.read().decode('utf-8', errors='replace')[:500]
+        except Exception:
+            pass
+        msg = f'ERROR: get_seen_slugs failed with HTTP {e.code}: {e}'
+        print(msg)
+        error_log.log_error(
+            'framer_templates', 'error',
+            'get_seen_slugs failed — Notion DB likely misconfigured',
+            {'status': e.code, 'error': str(e), 'notion_response': notion_response},
+        )
+        _warn_discord(
+            f'ERROR: framer_templates.py — get_seen_slugs returned HTTP {e.code}'
+            f' (DB likely deleted, renamed, or no longer shared with the integration,'
+            f' or NOTION_TOKEN expired/revoked). No new templates will be saved'
+            f' until fixed. Check NOTION_DATABASE_ID and NOTION_TOKEN secrets.'
+        )
+        raise SystemExit(1)
+    except Exception as e:
+        msg = f'ERROR: get_seen_slugs failed: {e}'
+        print(msg)
+        error_log.log_error(
+            'framer_templates', 'error',
+            'get_seen_slugs raised an unexpected exception',
+            {'error': str(e)},
+        )
+        _warn_discord(
+            f'ERROR: framer_templates.py — get_seen_slugs failed: {e}'
+            ' — Check GitHub Actions logs.'
+        )
+        raise SystemExit(1)
 
     new_templates = [t for t in templates if t['slug'] not in seen_slugs]
     is_first_run = len(seen_slugs) == 0
