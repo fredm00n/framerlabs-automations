@@ -20,6 +20,7 @@ from scripts.reddit_leads import (
     fetch_reddit_posts,
     get_lead_by_id,
     get_pending_leads,
+    get_unnotified_approved_leads,
     mark_notified,
     notify_discord_lead,
     passes_light_filter,
@@ -793,6 +794,135 @@ class TestGetPendingLeads(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# TestGetUnnotifiedApprovedLeads
+# ---------------------------------------------------------------------------
+
+class TestGetUnnotifiedApprovedLeads(unittest.TestCase):
+
+    @patch('scripts.reddit_leads.http_post')
+    def test_applies_approved_and_unnotified_filter(self, mock_post):
+        """The Notion query must AND together Status=approved and Notified=False."""
+        mock_post.return_value = {'results': [], 'has_more': False}
+        get_unnotified_approved_leads('db-id')
+        body = mock_post.call_args[0][1]
+        self.assertIn('and', body['filter'])
+        clauses = body['filter']['and']
+        self.assertEqual(len(clauses), 2)
+        # Status=approved
+        status_clause = next(c for c in clauses if c.get('property') == 'Status')
+        self.assertEqual(status_clause['select']['equals'], 'approved')
+        # Notified checkbox=False
+        notified_clause = next(c for c in clauses if c.get('property') == 'Notified')
+        self.assertEqual(notified_clause['checkbox']['equals'], False)
+
+    @patch('scripts.reddit_leads.http_post')
+    def test_query_targets_correct_database(self, mock_post):
+        mock_post.return_value = {'results': [], 'has_more': False}
+        get_unnotified_approved_leads('db-xyz')
+        called_url = mock_post.call_args[0][0]
+        self.assertIn('db-xyz', called_url)
+        self.assertTrue(called_url.endswith('/query'))
+
+    @patch('scripts.reddit_leads.http_post')
+    def test_parses_results_includes_review_notes(self, mock_post):
+        """review_notes must be extracted so --notify can rebuild the Discord embed."""
+        mock_post.return_value = {
+            'results': [{
+                'id': 'page-abc',
+                'properties': {
+                    'Name': {'title': [{'plain_text': 'Approved lead'}]},
+                    'URL': {'url': 'https://reddit.com/1'},
+                    'Subreddit': {'select': {'name': 'forhire'}},
+                    'Content': {'rich_text': [{'plain_text': 'Some content'}]},
+                    'Review Notes': {'rich_text': [{'plain_text': 'Genuine client hiring'}]},
+                },
+            }],
+            'has_more': False,
+        }
+        leads = get_unnotified_approved_leads('db-id')
+        self.assertEqual(len(leads), 1)
+        self.assertEqual(leads[0]['page_id'], 'page-abc')
+        self.assertEqual(leads[0]['title'], 'Approved lead')
+        self.assertEqual(leads[0]['url'], 'https://reddit.com/1')
+        self.assertEqual(leads[0]['subreddit'], 'forhire')
+        self.assertEqual(leads[0]['review_notes'], 'Genuine client hiring')
+
+    @patch('scripts.reddit_leads.http_post')
+    def test_review_notes_empty_string_when_field_missing(self, mock_post):
+        mock_post.return_value = {
+            'results': [{
+                'id': 'page-1',
+                'properties': {
+                    'Name': {'title': [{'plain_text': 'Lead'}]},
+                    'URL': {'url': 'https://reddit.com/1'},
+                    'Subreddit': {'select': {'name': 'framer'}},
+                    'Content': {'rich_text': []},
+                },
+            }],
+            'has_more': False,
+        }
+        leads = get_unnotified_approved_leads('db-id')
+        self.assertEqual(leads[0]['review_notes'], '')
+
+    @patch('scripts.reddit_leads.http_post')
+    def test_paginates(self, mock_post):
+        mock_post.side_effect = [
+            {
+                'results': [{'id': 'p1', 'properties': {
+                    'Name': {'title': [{'plain_text': 'Lead 1'}]},
+                    'URL': {'url': 'https://reddit.com/1'},
+                    'Subreddit': {'select': {'name': 'framer'}},
+                    'Content': {'rich_text': []},
+                    'Review Notes': {'rich_text': []},
+                }}],
+                'has_more': True,
+                'next_cursor': 'cursor-abc',
+            },
+            {
+                'results': [{'id': 'p2', 'properties': {
+                    'Name': {'title': [{'plain_text': 'Lead 2'}]},
+                    'URL': {'url': 'https://reddit.com/2'},
+                    'Subreddit': {'select': None},
+                    'Content': {'rich_text': []},
+                    'Review Notes': {'rich_text': []},
+                }}],
+                'has_more': False,
+            },
+        ]
+        leads = get_unnotified_approved_leads('db-id')
+        self.assertEqual(len(leads), 2)
+        self.assertEqual(mock_post.call_count, 2)
+        second_call_body = mock_post.call_args_list[1][0][1]
+        self.assertEqual(second_call_body['start_cursor'], 'cursor-abc')
+
+    @patch('scripts.reddit_leads.http_post')
+    def test_includes_post_date_when_present(self, mock_post):
+        mock_post.return_value = {
+            'results': [{
+                'id': 'page-dt',
+                'properties': {
+                    'Name': {'title': [{'plain_text': 'Lead with date'}]},
+                    'URL': {'url': 'https://reddit.com/3'},
+                    'Subreddit': {'select': {'name': 'forhire'}},
+                    'Content': {'rich_text': []},
+                    'Review Notes': {'rich_text': []},
+                    'Post Date': {'date': {'start': '2026-04-20T08:00:00+00:00'}},
+                },
+            }],
+            'has_more': False,
+        }
+        leads = get_unnotified_approved_leads('db-id')
+        self.assertEqual(leads[0]['post_date'], '2026-04-20T08:00:00+00:00')
+
+    @patch('scripts.reddit_leads.http_post')
+    def test_returns_empty_list_when_no_unnotified_approved(self, mock_post):
+        """No approved-but-unnotified leads is the steady-state expected case."""
+        mock_post.return_value = {'results': [], 'has_more': False}
+        leads = get_unnotified_approved_leads('db-id')
+        self.assertEqual(leads, [])
+
+
+# ---------------------------------------------------------------------------
 # TestGetLeadById
 # ---------------------------------------------------------------------------
 
@@ -1056,6 +1186,49 @@ class TestNotifyCli(unittest.TestCase):
         self.assertNotEqual(cm.exception.code, 0)
         mock_notify.assert_called_once()
         mock_mark.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# TestListUnnotifiedApprovedCli — the --list-unnotified-approved CLI lets the
+# reviewer recover from a previous --notify failure: a lead that was approved
+# but whose Discord webhook POST failed is now Status=approved + Notified=False
+# and would otherwise never be re-tried (--list-pending only sees Status=pending).
+# ---------------------------------------------------------------------------
+
+class TestListUnnotifiedApprovedCli(unittest.TestCase):
+
+    @patch.dict('os.environ', {'NOTION_REDDIT_LEADS_DB_ID': 'db-test'})
+    @patch('scripts.reddit_leads.load_dotenv')
+    @patch('scripts.reddit_leads.get_unnotified_approved_leads')
+    def test_calls_get_unnotified_approved_leads(self, mock_get, mock_env):
+        mock_get.return_value = []
+        cli(['--list-unnotified-approved'])
+        mock_get.assert_called_once_with('db-test')
+
+    @patch.dict('os.environ', {'NOTION_REDDIT_LEADS_DB_ID': 'db-test'})
+    @patch('scripts.reddit_leads.load_dotenv')
+    @patch('scripts.reddit_leads.get_unnotified_approved_leads')
+    def test_prints_json_to_stdout(self, mock_get, mock_env):
+        from io import StringIO
+        sample_lead = {
+            'page_id': 'p1', 'title': 'T', 'url': 'u', 'subreddit': 's',
+            'content': '', 'review_notes': 'Real client', 'post_date': '',
+        }
+        mock_get.return_value = [sample_lead]
+        with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
+            cli(['--list-unnotified-approved'])
+        printed = json.loads(mock_stdout.getvalue())
+        self.assertEqual(printed, [sample_lead])
+
+    @patch.dict('os.environ', {'NOTION_REDDIT_LEADS_DB_ID': 'db-test'})
+    @patch('scripts.reddit_leads.load_dotenv')
+    @patch('scripts.reddit_leads.get_unnotified_approved_leads')
+    def test_empty_result_prints_empty_array(self, mock_get, mock_env):
+        from io import StringIO
+        mock_get.return_value = []
+        with patch('sys.stdout', new_callable=StringIO) as mock_stdout:
+            cli(['--list-unnotified-approved'])
+        self.assertEqual(json.loads(mock_stdout.getvalue()), [])
 
 
 # ---------------------------------------------------------------------------
