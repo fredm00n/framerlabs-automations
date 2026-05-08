@@ -94,6 +94,35 @@ python3 scripts/reddit_leads.py --notify PAGE_ID
 ```
 
 This sends a Discord embed to the leads channel and marks the lead as Notified in Notion.
+The script only flips the Notified checkbox after the webhook POST succeeds; on failure it
+exits non-zero and leaves Notified=False so the lead can be retried later (see Step 6).
+
+---
+
+## Step 6 — Retry any previously-failed notifications
+
+A `--notify` invocation in an earlier session may have failed (e.g. transient Discord
+5xx, expired webhook, network blip). Those leads are now `Status=approved` +
+`Notified=False` and would otherwise never be re-tried, since `--list-pending` only
+returns `Status=pending` leads.
+
+Recover them with:
+
+```bash
+python3 scripts/reddit_leads.py --list-unnotified-approved
+```
+
+This prints a JSON array of approved-but-unnotified leads with the same fields as
+`--list-pending` plus `review_notes` (the explanation set during the original
+approval). For each entry, re-run:
+
+```bash
+python3 scripts/reddit_leads.py --notify PAGE_ID
+```
+
+The original Review Notes are preserved on the page, so the Discord embed will use
+the same explanation as if the original notification had succeeded. If the output
+is an empty array `[]`, nothing needs retrying — proceed to exit.
 
 ---
 

@@ -489,6 +489,62 @@ def get_pending_leads(db_id: str) -> list[dict]:
     return leads
 
 
+def get_unnotified_approved_leads(db_id: str) -> list[dict]:
+    """Return all leads with Status='approved' AND Notified=False from Notion.
+
+    These are leads the reviewer marked approved in a previous session whose
+    ``--notify`` invocation failed (e.g. transient Discord 5xx, expired
+    webhook, network blip).  Without this recovery hook, an approved lead
+    that fails to notify is silently lost forever: the next reviewer session
+    only inspects ``Status=pending`` leads, so the approved-but-unnotified
+    page is never picked up again.
+
+    The reviewer session calls ``--list-unnotified-approved`` after handling
+    pending leads so it can re-run ``--notify PAGE_ID`` on each entry.  The
+    Review Notes set in the original approval are preserved on the page, so
+    the retry uses the same explanation in the Discord embed.
+    """
+    leads = []
+    cursor = None
+    while True:
+        body: dict = {
+            'filter': {
+                'and': [
+                    {'property': 'Status', 'select': {'equals': 'approved'}},
+                    {'property': 'Notified', 'checkbox': {'equals': False}},
+                ],
+            },
+            'page_size': 100,
+        }
+        if cursor:
+            body['start_cursor'] = cursor
+        data = http_post(
+            f'https://api.notion.com/v1/databases/{db_id}/query',
+            body,
+            headers=notion_headers(),
+        )
+        for page in data.get('results', []):
+            props = page['properties']
+            title_rt = props.get('Name', {}).get('title', [])
+            subreddit_sel = props.get('Subreddit', {}).get('select') or {}
+            content_rt = props.get('Content', {}).get('rich_text', [])
+            notes_rt = props.get('Review Notes', {}).get('rich_text', [])
+            post_date_prop = props.get('Post Date', {}).get('date') or {}
+            leads.append({
+                'page_id': page['id'],
+                'title': title_rt[0]['plain_text'] if title_rt else '',
+                'url': props.get('URL', {}).get('url', '') or '',
+                'subreddit': subreddit_sel.get('name', ''),
+                'content': content_rt[0]['plain_text'] if content_rt else '',
+                'review_notes': notes_rt[0]['plain_text'] if notes_rt else '',
+                'post_date': post_date_prop.get('start', ''),
+            })
+        if not data.get('has_more'):
+            break
+        cursor = data.get('next_cursor')
+    return leads
+
+
 def get_lead_by_id(page_id: str) -> dict:
     """Fetch a single Notion page and return it as a lead dict."""
     raw = http_get(
@@ -807,6 +863,17 @@ def cli(args: list[str]) -> None:
     if args[0] == '--list-pending':
         load_dotenv()
         leads = get_pending_leads(os.environ['NOTION_REDDIT_LEADS_DB_ID'])
+        print(json.dumps(leads, indent=2))
+        return
+
+    if args[0] == '--list-unnotified-approved':
+        # Reviewer recovery hook: leads that were approved in a previous
+        # session but whose ``--notify`` failed (e.g. transient Discord
+        # outage) end up Status=approved + Notified=False.  ``--list-pending``
+        # never picks them up again because it filters Status=pending only,
+        # so without this command they would be silently lost.
+        load_dotenv()
+        leads = get_unnotified_approved_leads(os.environ['NOTION_REDDIT_LEADS_DB_ID'])
         print(json.dumps(leads, indent=2))
         return
 
