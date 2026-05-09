@@ -557,6 +557,12 @@ def get_lead_by_id(page_id: str) -> dict:
     subreddit_sel = props.get('Subreddit', {}).get('select') or {}
     content_rt = props.get('Content', {}).get('rich_text', [])
     notes_rt = props.get('Review Notes', {}).get('rich_text', [])
+    # ``Post Date`` is the original Reddit publish time saved by Phase 1.  It is
+    # included in the returned lead so that ``notify_discord_lead`` can surface
+    # it as the Discord embed ``timestamp`` — this lets a human reading the
+    # leads channel see at a glance how stale a lead is (a 5-day-old post is
+    # much less actionable than a 2-hour-old one) without clicking through.
+    post_date_prop = props.get('Post Date', {}).get('date') or {}
     return {
         'page_id': page['id'],
         'title': title_rt[0]['plain_text'] if title_rt else '',
@@ -564,6 +570,7 @@ def get_lead_by_id(page_id: str) -> dict:
         'subreddit': subreddit_sel.get('name', ''),
         'content': content_rt[0]['plain_text'] if content_rt else '',
         'review_notes': notes_rt[0]['plain_text'] if notes_rt else '',
+        'post_date': post_date_prop.get('start', ''),
     }
 
 
@@ -606,13 +613,27 @@ def notify_discord_lead(lead: dict) -> bool:
     """
     review_notes = lead.get('review_notes', '')
     description = f"**Why this is a lead:** {review_notes}" if review_notes else ''
-    embed = {
+    embed: dict = {
         'title': lead['title'][:256],
         'url': lead['url'],
         'description': description,
         'color': 0x00B0F4,
         'author': {'name': f"r/{lead['subreddit']}"},
     }
+    # Surface the Reddit post's original publish time as the embed timestamp so
+    # Discord renders a human-readable "X hours/days ago" indicator under the
+    # embed.  This lets the operator see at a glance how stale a lead is — a
+    # 5-day-old hiring post is much less actionable than a fresh one — without
+    # opening Reddit.  Discord requires a valid ISO 8601 string here, so an
+    # empty/malformed value is silently omitted (a parsable check is cheap and
+    # avoids letting a bad value 400 the webhook for a whole batch of leads).
+    post_date = lead.get('post_date', '')
+    if post_date:
+        try:
+            datetime.fromisoformat(post_date)
+            embed['timestamp'] = post_date
+        except (ValueError, TypeError):
+            pass
     try:
         http_post(os.environ['DISCORD_WEBHOOK_URL_LEADS'], {'embeds': [embed]})
         return True
