@@ -960,6 +960,56 @@ class TestGetLeadById(unittest.TestCase):
         lead = get_lead_by_id('page-xyz')
         self.assertEqual(lead['review_notes'], '')
 
+    @patch('scripts.reddit_leads.http_get')
+    def test_includes_post_date_when_present(self, mock_get):
+        """get_lead_by_id must surface Post Date so notify can render embed timestamp."""
+        mock_get.return_value = json.dumps({
+            'id': 'page-xyz',
+            'properties': {
+                'Name': {'title': [{'plain_text': 'Test'}]},
+                'URL': {'url': 'https://reddit.com/1'},
+                'Subreddit': {'select': {'name': 'framer'}},
+                'Content': {'rich_text': []},
+                'Review Notes': {'rich_text': []},
+                'Post Date': {'date': {'start': '2024-03-01T10:00:00+00:00'}},
+            },
+        })
+        lead = get_lead_by_id('page-xyz')
+        self.assertEqual(lead['post_date'], '2024-03-01T10:00:00+00:00')
+
+    @patch('scripts.reddit_leads.http_get')
+    def test_post_date_empty_string_when_field_absent(self, mock_get):
+        """Pages saved before Post Date was tracked must still parse cleanly."""
+        mock_get.return_value = json.dumps({
+            'id': 'page-xyz',
+            'properties': {
+                'Name': {'title': [{'plain_text': 'Test'}]},
+                'URL': {'url': 'https://reddit.com/1'},
+                'Subreddit': {'select': {'name': 'framer'}},
+                'Content': {'rich_text': []},
+                'Review Notes': {'rich_text': []},
+            },
+        })
+        lead = get_lead_by_id('page-xyz')
+        self.assertEqual(lead['post_date'], '')
+
+    @patch('scripts.reddit_leads.http_get')
+    def test_post_date_empty_string_when_date_value_is_null(self, mock_get):
+        """Notion may return ``Post Date.date: null`` for an empty date field."""
+        mock_get.return_value = json.dumps({
+            'id': 'page-xyz',
+            'properties': {
+                'Name': {'title': [{'plain_text': 'Test'}]},
+                'URL': {'url': 'https://reddit.com/1'},
+                'Subreddit': {'select': {'name': 'framer'}},
+                'Content': {'rich_text': []},
+                'Review Notes': {'rich_text': []},
+                'Post Date': {'date': None},
+            },
+        })
+        lead = get_lead_by_id('page-xyz')
+        self.assertEqual(lead['post_date'], '')
+
 
 # ---------------------------------------------------------------------------
 # TestUpdateLeadStatus
@@ -1117,6 +1167,70 @@ class TestNotifyDiscordLead(unittest.TestCase):
             'content': '',
         }
         self.assertTrue(notify_discord_lead(lead))
+
+    @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
+    @patch('scripts.reddit_leads.http_post')
+    def test_includes_post_date_as_embed_timestamp(self, mock_post):
+        """post_date on the lead must surface as the Discord embed ``timestamp``."""
+        mock_post.return_value = {}
+        lead = {
+            'title': 'Hiring Framer dev',
+            'url': 'https://reddit.com/r/forhire/1',
+            'subreddit': 'forhire',
+            'content': '',
+            'review_notes': 'Real client',
+            'post_date': '2024-03-01T10:00:00+00:00',
+        }
+        notify_discord_lead(lead)
+        embed = mock_post.call_args[0][1]['embeds'][0]
+        self.assertEqual(embed['timestamp'], '2024-03-01T10:00:00+00:00')
+
+    @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
+    @patch('scripts.reddit_leads.http_post')
+    def test_omits_timestamp_when_post_date_missing(self, mock_post):
+        """Leads stored before Post Date was tracked must not crash the notify path."""
+        mock_post.return_value = {}
+        lead = {
+            'title': 'Hiring Framer dev',
+            'url': 'https://reddit.com/r/forhire/1',
+            'subreddit': 'forhire',
+            'content': '',
+        }
+        notify_discord_lead(lead)
+        embed = mock_post.call_args[0][1]['embeds'][0]
+        self.assertNotIn('timestamp', embed)
+
+    @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
+    @patch('scripts.reddit_leads.http_post')
+    def test_omits_timestamp_when_post_date_empty_string(self, mock_post):
+        """An explicit empty ``post_date`` must not produce a malformed embed."""
+        mock_post.return_value = {}
+        lead = {
+            'title': 'Hiring Framer dev',
+            'url': 'https://reddit.com/r/forhire/1',
+            'subreddit': 'forhire',
+            'content': '',
+            'post_date': '',
+        }
+        notify_discord_lead(lead)
+        embed = mock_post.call_args[0][1]['embeds'][0]
+        self.assertNotIn('timestamp', embed)
+
+    @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
+    @patch('scripts.reddit_leads.http_post')
+    def test_omits_timestamp_when_post_date_unparseable(self, mock_post):
+        """A malformed post_date must be silently dropped, not 400 the webhook."""
+        mock_post.return_value = {}
+        lead = {
+            'title': 'Hiring Framer dev',
+            'url': 'https://reddit.com/r/forhire/1',
+            'subreddit': 'forhire',
+            'content': '',
+            'post_date': 'not-an-iso-date',
+        }
+        notify_discord_lead(lead)
+        embed = mock_post.call_args[0][1]['embeds'][0]
+        self.assertNotIn('timestamp', embed)
 
     @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
     @patch('scripts.reddit_leads.http_post', side_effect=Exception('webhook down'))
