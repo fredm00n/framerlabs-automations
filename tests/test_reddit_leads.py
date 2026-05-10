@@ -1251,6 +1251,90 @@ class TestNotifyDiscordLead(unittest.TestCase):
         self.assertEqual(ctx.get('subreddit'), 'forhire')
         self.assertIn('error', ctx)
 
+    @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
+    def test_http_error_logs_discord_response_body(self):
+        """When the Discord webhook raises an HTTPError, the API response body
+        must be captured as ``discord_response`` so an operator can distinguish
+        between a revoked webhook (401), deleted webhook (404), rate-limit
+        (429), and malformed-payload rejection (400) -- all of which would
+        otherwise log only ``"HTTP Error <code>: <reason>"``."""
+        import io
+        import error_log as el
+        body = b'{"message": "Invalid Webhook Token", "code": 50027}'
+        http_err = urllib.error.HTTPError(
+            'https://discord.com/webhook/leads',
+            401, 'Unauthorized', {}, io.BytesIO(body),
+        )
+        lead = {
+            'title': 'Hiring Framer dev',
+            'url': 'https://reddit.com/r/forhire/abc',
+            'subreddit': 'forhire',
+            'content': '',
+        }
+        with patch('scripts.reddit_leads.http_post', side_effect=http_err), \
+             patch.object(el, 'log_error') as mock_log:
+            result = notify_discord_lead(lead)
+        # Failure must be reported to caller via False return.
+        self.assertFalse(result)
+        self.assertTrue(mock_log.called)
+        ctx = mock_log.call_args[0][3]
+        self.assertEqual(ctx.get('status'), 401)
+        self.assertIn('discord_response', ctx)
+        self.assertIn('Invalid Webhook Token', ctx['discord_response'])
+        # Existing diagnostic context fields are preserved.
+        self.assertEqual(ctx.get('url'), 'https://reddit.com/r/forhire/abc')
+        self.assertEqual(ctx.get('subreddit'), 'forhire')
+        self.assertIn('error', ctx)
+        # Severity remains 'warning' (a Discord webhook failure is recoverable
+        # via --list-unnotified-approved retry, not a hard error).
+        self.assertEqual(mock_log.call_args[0][1], 'warning')
+
+    @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
+    def test_http_error_truncates_long_discord_response_body(self):
+        """The captured Discord response body must be capped at 500 chars to
+        keep ``logs/errors.jsonl`` lines manageable."""
+        import io
+        import error_log as el
+        body = b'A' * 1000
+        # 400 is non-retriable so the http_post side_effect runs only once,
+        # not 4x with exponential backoff.
+        http_err = urllib.error.HTTPError(
+            'https://discord.com/webhook/leads',
+            400, 'Bad Request', {}, io.BytesIO(body),
+        )
+        lead = {
+            'title': 'T', 'url': 'https://x.com', 'subreddit': 'forhire', 'content': '',
+        }
+        with patch('scripts.reddit_leads.http_post', side_effect=http_err), \
+             patch.object(el, 'log_error') as mock_log:
+            notify_discord_lead(lead)
+        ctx = mock_log.call_args[0][3]
+        self.assertLessEqual(len(ctx['discord_response']), 500)
+
+    @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
+    @patch('scripts.reddit_leads.http_post',
+           side_effect=TimeoutError('The read operation timed out'))
+    def test_non_http_error_keeps_lighter_context(self, mock_post):
+        """Non-HTTP exceptions must keep the existing lighter ``{error, url,
+        subreddit}`` context (no ``status`` / ``discord_response`` -- there is
+        no HTTP body to capture)."""
+        import error_log as el
+        lead = {
+            'title': 'Hiring Framer dev',
+            'url': 'https://reddit.com/r/forhire/abc',
+            'subreddit': 'forhire',
+            'content': '',
+        }
+        with patch.object(el, 'log_error') as mock_log:
+            result = notify_discord_lead(lead)
+        self.assertFalse(result)
+        ctx = mock_log.call_args[0][3]
+        self.assertNotIn('status', ctx)
+        self.assertNotIn('discord_response', ctx)
+        self.assertIn('error', ctx)
+        self.assertEqual(ctx.get('url'), 'https://reddit.com/r/forhire/abc')
+        self.assertEqual(ctx.get('subreddit'), 'forhire')
+
 
 # ---------------------------------------------------------------------------
 # TestMarkNotified
@@ -1938,6 +2022,44 @@ class TestWarnDiscord(unittest.TestCase):
         with patch('scripts.reddit_leads.http_post') as mock_post:
             rl._warn_discord('msg')  # must not raise
         mock_post.assert_not_called()
+
+    def test_http_error_logs_discord_response_body(self):
+        """An HTTPError on the alerts webhook (e.g. revoked URL, deleted
+        channel, rate-limit) must log the Discord response body so the
+        misconfiguration can be diagnosed from logs alone -- otherwise the
+        log entry just says ``"HTTP Error <code>: <reason>"``."""
+        import io
+        import error_log as el
+        body = b'{"message": "Unknown Webhook", "code": 10015}'
+        http_err = urllib.error.HTTPError(
+            'https://discord.com/api/webhooks/test-alerts',
+            404, 'Not Found', {}, io.BytesIO(body),
+        )
+        with patch('scripts.reddit_leads.http_post', side_effect=http_err), \
+             patch.object(el, 'log_error') as mock_log:
+            rl._warn_discord('msg')  # must not raise
+        self.assertTrue(mock_log.called)
+        ctx = mock_log.call_args[0][3]
+        self.assertEqual(ctx.get('status'), 404)
+        self.assertIn('discord_response', ctx)
+        self.assertIn('Unknown Webhook', ctx['discord_response'])
+        self.assertIn('error', ctx)
+
+    def test_http_error_truncates_long_discord_response_body(self):
+        """The captured Discord response body must be capped at 500 chars."""
+        import io
+        import error_log as el
+        body = b'B' * 1500
+        # 400 is non-retriable so the side_effect runs only once.
+        http_err = urllib.error.HTTPError(
+            'https://discord.com/api/webhooks/test-alerts',
+            400, 'Bad Request', {}, io.BytesIO(body),
+        )
+        with patch('scripts.reddit_leads.http_post', side_effect=http_err), \
+             patch.object(el, 'log_error') as mock_log:
+            rl._warn_discord('msg')
+        ctx = mock_log.call_args[0][3]
+        self.assertLessEqual(len(ctx['discord_response']), 500)
 
 
 # ---------------------------------------------------------------------------

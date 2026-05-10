@@ -684,6 +684,32 @@ def notify_discord_batch(templates: list[dict]) -> None:
     for payload in payloads:
         try:
             http_post(os.environ['DISCORD_WEBHOOK_URL_TEMPLATES'], payload)
+        except urllib.error.HTTPError as e:
+            # Capture the Discord API response body so an operator can
+            # distinguish between a revoked webhook (401), a deleted
+            # channel/webhook (404), rate-limiting (429), and a malformed-
+            # payload rejection (400) — all of which otherwise log only
+            # ``"HTTP Error <code>: <reason>"`` with no actionable signal.
+            # Mirrors the diagnostic capture in ``post_to_x`` and
+            # ``save_to_notion`` for Twitter / Notion HTTP errors.
+            discord_response = ''
+            try:
+                discord_response = e.read().decode('utf-8', errors='replace')[:500]
+            except Exception:
+                pass
+            titles = ', '.join(em['title'] for em in payload.get('embeds', []))
+            label = titles or 'summary'
+            print(f'Discord notification failed for [{label}]: {e}')
+            error_log.log_error(
+                'framer_templates', 'warning',
+                'Discord batch notification failed',
+                {
+                    'label': label,
+                    'status': e.code,
+                    'error': str(e),
+                    'discord_response': discord_response,
+                },
+            )
         except Exception as e:
             titles = ', '.join(em['title'] for em in payload.get('embeds', []))
             label = titles or 'summary'
@@ -708,6 +734,22 @@ def _warn_discord(message: str) -> None:
         return
     try:
         http_post(webhook_url, {'content': f'[framerlabs-automations] {message}'})
+    except urllib.error.HTTPError as e:
+        # Capture the Discord API response body so a misconfigured alerts
+        # webhook (revoked, deleted, rate-limited, malformed payload) can be
+        # diagnosed from logs/errors.jsonl alone.  Mirrors the diagnostic
+        # capture in ``notify_discord_batch`` above.
+        discord_response = ''
+        try:
+            discord_response = e.read().decode('utf-8', errors='replace')[:500]
+        except Exception:
+            pass
+        print(f'Failed to send Discord alert: {e}')
+        error_log.log_error(
+            'framer_templates', 'warning',
+            'Failed to send Discord alert',
+            {'status': e.code, 'error': str(e), 'discord_response': discord_response},
+        )
     except Exception as e:
         print(f'Failed to send Discord alert: {e}')
         error_log.log_error('framer_templates', 'warning', 'Failed to send Discord alert', {'error': str(e)})
