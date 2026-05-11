@@ -637,6 +637,32 @@ def notify_discord_lead(lead: dict) -> bool:
     try:
         http_post(os.environ['DISCORD_WEBHOOK_URL_LEADS'], {'embeds': [embed]})
         return True
+    except urllib.error.HTTPError as e:
+        # Capture the Discord API response body so an operator can distinguish
+        # between a revoked webhook (401), a deleted channel/webhook (404), a
+        # rate-limit (429), and a malformed-payload rejection (400) — all of
+        # which otherwise log only ``"HTTP Error <code>: <reason>"`` with no
+        # actionable signal.  Mirrors the same diagnostic pattern already used
+        # by ``save_lead_to_notion``, ``url_exists_in_notion``,
+        # ``fetch_reddit_posts``, and ``post_to_x`` in ``framer_templates.py``.
+        discord_response = ''
+        try:
+            discord_response = e.read().decode('utf-8', errors='replace')[:500]
+        except Exception:
+            pass
+        print(f'Discord notification failed for "{lead["title"]}": {e}')
+        error_log.log_error(
+            'reddit_leads', 'warning',
+            f'Discord notification failed for "{lead["title"]}"',
+            {
+                'status': e.code,
+                'error': str(e),
+                'url': lead.get('url', ''),
+                'subreddit': lead.get('subreddit', ''),
+                'discord_response': discord_response,
+            },
+        )
+        return False
     except Exception as e:
         print(f'Discord notification failed for "{lead["title"]}": {e}')
         error_log.log_error(
@@ -655,6 +681,23 @@ def _warn_discord(message: str) -> None:
         return
     try:
         http_post(webhook_url, {'content': f'[framerlabs-automations] {message}'})
+    except urllib.error.HTTPError as e:
+        # Capture the Discord API response body so a misconfigured alerts
+        # webhook (revoked, deleted, rate-limited, malformed payload) can be
+        # diagnosed from logs/errors.jsonl alone — without it the log says
+        # only ``"HTTP Error <code>: <reason>"``.  Mirrors the diagnostic
+        # capture in ``notify_discord_lead`` above.
+        discord_response = ''
+        try:
+            discord_response = e.read().decode('utf-8', errors='replace')[:500]
+        except Exception:
+            pass
+        print(f'Failed to send Discord alert: {e}')
+        error_log.log_error(
+            'reddit_leads', 'warning',
+            'Failed to send Discord alert',
+            {'status': e.code, 'error': str(e), 'discord_response': discord_response},
+        )
     except Exception as e:
         print(f'Failed to send Discord alert: {e}')
         error_log.log_error('reddit_leads', 'warning', 'Failed to send Discord alert', {'error': str(e)})
