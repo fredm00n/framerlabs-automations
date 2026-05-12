@@ -2475,5 +2475,117 @@ class TestHttpRetry(unittest.TestCase):
         self.assertEqual(call_count[0], 2)
 
 
+# ---------------------------------------------------------------------------
+# _parse_retry_after / Retry-After honouring inside _retry
+# ---------------------------------------------------------------------------
+
+
+def _make_http_error(code: int, headers: dict | None = None) -> urllib.error.HTTPError:
+    """Build an ``HTTPError`` whose ``.headers`` is a real email.Message.
+
+    Passing a plain ``{}`` makes ``.headers`` a bare dict, but real responses
+    expose an ``email.message.Message`` whose ``.get()`` is case-insensitive.
+    Using the realistic type here matches what the runtime code receives.
+    """
+    import email.message
+    msg = email.message.Message()
+    for k, v in (headers or {}).items():
+        msg[k] = v
+    return urllib.error.HTTPError(None, code, 'err', msg, None)
+
+
+class TestParseRetryAfter(unittest.TestCase):
+    """``_parse_retry_after`` accepts both integer-seconds and HTTP-date forms."""
+
+    def test_empty_returns_none(self):
+        self.assertIsNone(ft._parse_retry_after(''))
+
+    def test_integer_seconds(self):
+        self.assertEqual(ft._parse_retry_after('5'), 5.0)
+
+    def test_float_seconds(self):
+        self.assertEqual(ft._parse_retry_after('2.5'), 2.5)
+
+    def test_zero(self):
+        self.assertEqual(ft._parse_retry_after('0'), 0.0)
+
+    def test_negative_seconds_returns_none(self):
+        self.assertIsNone(ft._parse_retry_after('-3'))
+
+    def test_strips_whitespace(self):
+        self.assertEqual(ft._parse_retry_after('  7  '), 7.0)
+
+    def test_garbage_returns_none(self):
+        self.assertIsNone(ft._parse_retry_after('soon-ish'))
+
+    def test_http_date_in_future(self):
+        result = ft._parse_retry_after('Wed, 21 Oct 2099 07:28:00 GMT')
+        self.assertIsNotNone(result)
+        self.assertGreater(result, 0)
+
+    def test_http_date_in_past_returns_zero(self):
+        result = ft._parse_retry_after('Wed, 21 Oct 1999 07:28:00 GMT')
+        self.assertEqual(result, 0.0)
+
+
+class TestRetryAfter(unittest.TestCase):
+    """``_retry`` honours ``Retry-After`` on HTTP 429 responses."""
+
+    def test_429_with_integer_retry_after_sleeps_for_header_value(self):
+        exc = _make_http_error(429, {'Retry-After': '5'})
+        fn = MagicMock(side_effect=[exc, 'ok'])
+        with patch('time.sleep') as mock_sleep:
+            result = ft._retry(fn, max_attempts=4)
+        self.assertEqual(result, 'ok')
+        delays = [c[0][0] for c in mock_sleep.call_args_list]
+        self.assertEqual(delays, [5])
+
+    def test_429_with_smaller_retry_after_uses_default_backoff(self):
+        # The default backoff (2s) is longer than the header (1s), so we keep
+        # the default — ``Retry-After`` is a minimum, not a maximum.
+        exc = _make_http_error(429, {'Retry-After': '1'})
+        fn = MagicMock(side_effect=[exc, 'ok'])
+        with patch('time.sleep') as mock_sleep:
+            ft._retry(fn, max_attempts=4)
+        delays = [c[0][0] for c in mock_sleep.call_args_list]
+        self.assertEqual(delays, [2])
+
+    def test_429_without_retry_after_uses_default_backoff(self):
+        exc = _make_http_error(429, {})
+        fn = MagicMock(side_effect=[exc, exc, 'ok'])
+        with patch('time.sleep') as mock_sleep:
+            ft._retry(fn, max_attempts=4)
+        delays = [c[0][0] for c in mock_sleep.call_args_list]
+        self.assertEqual(delays, [2, 4])
+
+    def test_429_with_malformed_retry_after_uses_default_backoff(self):
+        exc = _make_http_error(429, {'Retry-After': 'not-a-number'})
+        fn = MagicMock(side_effect=[exc, 'ok'])
+        with patch('time.sleep') as mock_sleep:
+            ft._retry(fn, max_attempts=4)
+        delays = [c[0][0] for c in mock_sleep.call_args_list]
+        self.assertEqual(delays, [2])
+
+    def test_429_retry_after_clamped_to_max(self):
+        # Servers sometimes advertise very long backoffs; we cap so we don't
+        # consume most of the 15-minute cron window on one rate-limited call.
+        exc = _make_http_error(429, {'Retry-After': '600'})
+        fn = MagicMock(side_effect=[exc, 'ok'])
+        with patch('time.sleep') as mock_sleep:
+            ft._retry(fn, max_attempts=4)
+        delays = [c[0][0] for c in mock_sleep.call_args_list]
+        self.assertEqual(delays, [ft._RETRY_AFTER_MAX_SECONDS])
+
+    def test_5xx_with_retry_after_is_ignored(self):
+        # Only 429 triggers the special header lookup; existing 5xx behaviour
+        # (pure exponential backoff) is preserved.
+        exc = _make_http_error(503, {'Retry-After': '10'})
+        fn = MagicMock(side_effect=[exc, 'ok'])
+        with patch('time.sleep') as mock_sleep:
+            ft._retry(fn, max_attempts=4)
+        delays = [c[0][0] for c in mock_sleep.call_args_list]
+        self.assertEqual(delays, [2])
+
+
 if __name__ == '__main__':
     unittest.main()

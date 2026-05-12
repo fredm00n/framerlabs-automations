@@ -11,8 +11,10 @@ from unittest.mock import MagicMock, call, patch
 sys.path.insert(0, '.')
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts'))
 from scripts.reddit_leads import (
+    _RETRY_AFTER_MAX_SECONDS,
     _clean_html,
     _is_valid_iso8601_date,
+    _parse_retry_after,
     _retry,
     _should_retry,
     _truncate_for_notion,
@@ -147,6 +149,123 @@ class TestRetry(unittest.TestCase):
             _retry(fn, max_attempts=4)
         delays = [c[0][0] for c in mock_sleep.call_args_list]
         self.assertEqual(delays, [2, 4])
+
+
+# ---------------------------------------------------------------------------
+# TestParseRetryAfter / TestRetryAfter
+# ---------------------------------------------------------------------------
+
+
+def _make_http_error(code: int, headers: dict | None = None) -> urllib.error.HTTPError:
+    """Build an ``HTTPError`` whose ``.headers`` is a real email.Message.
+
+    Passing ``{}`` directly as the headers argument means ``HTTPError.headers``
+    is a bare dict, but real responses expose an ``email.message.Message``-like
+    object whose ``.get()`` is case-insensitive.  Mirroring that here keeps the
+    tests realistic for the ``Retry-After`` lookup.
+    """
+    import email.message
+    msg = email.message.Message()
+    for k, v in (headers or {}).items():
+        msg[k] = v
+    return urllib.error.HTTPError(None, code, 'err', msg, None)
+
+
+class TestParseRetryAfter(unittest.TestCase):
+    """``_parse_retry_after`` accepts both integer-seconds and HTTP-date forms."""
+
+    def test_empty_returns_none(self):
+        self.assertIsNone(_parse_retry_after(''))
+
+    def test_integer_seconds(self):
+        self.assertEqual(_parse_retry_after('5'), 5.0)
+
+    def test_float_seconds(self):
+        self.assertEqual(_parse_retry_after('2.5'), 2.5)
+
+    def test_zero(self):
+        self.assertEqual(_parse_retry_after('0'), 0.0)
+
+    def test_negative_seconds_returns_none(self):
+        # A negative ``Retry-After`` is nonsensical; fall back to default backoff.
+        self.assertIsNone(_parse_retry_after('-3'))
+
+    def test_strips_whitespace(self):
+        self.assertEqual(_parse_retry_after('  7  '), 7.0)
+
+    def test_garbage_returns_none(self):
+        self.assertIsNone(_parse_retry_after('soon-ish'))
+
+    def test_http_date_in_future(self):
+        # Pick a fixed future date and verify parse returns >= 0.
+        # We can't assert an exact value because the helper diffs from "now".
+        result = _parse_retry_after('Wed, 21 Oct 2099 07:28:00 GMT')
+        self.assertIsNotNone(result)
+        self.assertGreater(result, 0)
+
+    def test_http_date_in_past_returns_zero(self):
+        # A date in the past should clamp to 0 rather than going negative.
+        result = _parse_retry_after('Wed, 21 Oct 1999 07:28:00 GMT')
+        self.assertEqual(result, 0.0)
+
+
+class TestRetryAfter(unittest.TestCase):
+    """``_retry`` honours ``Retry-After`` on HTTP 429 responses."""
+
+    def test_429_with_integer_retry_after_sleeps_for_header_value(self):
+        exc = _make_http_error(429, {'Retry-After': '5'})
+        fn = MagicMock(side_effect=[exc, 'ok'])
+        with patch('time.sleep') as mock_sleep:
+            result = _retry(fn, max_attempts=4)
+        self.assertEqual(result, 'ok')
+        # default backoff would have been 2s; the 5s header beats it
+        delays = [c[0][0] for c in mock_sleep.call_args_list]
+        self.assertEqual(delays, [5])
+
+    def test_429_with_smaller_retry_after_uses_default_backoff(self):
+        # If the server says 1s but our backoff says 2s, we keep the longer
+        # delay — the server's value is a *minimum* per RFC 7231.
+        exc = _make_http_error(429, {'Retry-After': '1'})
+        fn = MagicMock(side_effect=[exc, 'ok'])
+        with patch('time.sleep') as mock_sleep:
+            _retry(fn, max_attempts=4)
+        delays = [c[0][0] for c in mock_sleep.call_args_list]
+        self.assertEqual(delays, [2])
+
+    def test_429_without_retry_after_uses_default_backoff(self):
+        exc = _make_http_error(429, {})
+        fn = MagicMock(side_effect=[exc, exc, 'ok'])
+        with patch('time.sleep') as mock_sleep:
+            _retry(fn, max_attempts=4)
+        delays = [c[0][0] for c in mock_sleep.call_args_list]
+        self.assertEqual(delays, [2, 4])
+
+    def test_429_with_malformed_retry_after_uses_default_backoff(self):
+        exc = _make_http_error(429, {'Retry-After': 'not-a-number'})
+        fn = MagicMock(side_effect=[exc, 'ok'])
+        with patch('time.sleep') as mock_sleep:
+            _retry(fn, max_attempts=4)
+        delays = [c[0][0] for c in mock_sleep.call_args_list]
+        self.assertEqual(delays, [2])
+
+    def test_429_retry_after_clamped_to_max(self):
+        # Reddit can return very large ``Retry-After`` values; we should cap.
+        exc = _make_http_error(429, {'Retry-After': '600'})
+        fn = MagicMock(side_effect=[exc, 'ok'])
+        with patch('time.sleep') as mock_sleep:
+            _retry(fn, max_attempts=4)
+        delays = [c[0][0] for c in mock_sleep.call_args_list]
+        self.assertEqual(delays, [_RETRY_AFTER_MAX_SECONDS])
+
+    def test_5xx_with_retry_after_is_ignored(self):
+        # Only 429 triggers the special header lookup; a 503 with Retry-After
+        # still uses exponential backoff to keep the existing behaviour stable.
+        exc = _make_http_error(503, {'Retry-After': '10'})
+        fn = MagicMock(side_effect=[exc, 'ok'])
+        with patch('time.sleep') as mock_sleep:
+            _retry(fn, max_attempts=4)
+        delays = [c[0][0] for c in mock_sleep.call_args_list]
+        self.assertEqual(delays, [2])
 
 
 # ---------------------------------------------------------------------------
