@@ -51,7 +51,57 @@ def _should_retry(exc: Exception) -> bool:
     return False
 
 
+# Upper bound on the sleep we will honour from a server-supplied ``Retry-After``
+# header.  Some endpoints (notably Reddit when hitting a rate-limit) can return
+# values in the hundreds of seconds.  Sleeping that long inside a 15-minute
+# cron run would consume most of the run window and produce no work; capping at
+# 60 seconds means the per-call delay stays bounded while still respecting the
+# server's signal that we should slow down.
+_RETRY_AFTER_MAX_SECONDS = 60
+
+
+def _parse_retry_after(value: str) -> float | None:
+    """Parse an HTTP ``Retry-After`` header value into a number of seconds.
+
+    Per RFC 7231 §7.1.3, ``Retry-After`` is either a non-negative integer
+    number of seconds (e.g. ``"5"``) or an HTTP-date (e.g.
+    ``"Wed, 21 Oct 2026 07:28:00 GMT"``).  Returns the delay in seconds for
+    either form, or ``None`` if the value is missing/malformed so the caller
+    can fall back to its default backoff.
+    """
+    if not value:
+        return None
+    value = value.strip()
+    # Integer-seconds form (the common case for Discord / Notion / Twitter).
+    try:
+        seconds = float(value)
+        return seconds if seconds >= 0 else None
+    except ValueError:
+        pass
+    # HTTP-date form.
+    try:
+        from email.utils import parsedate_to_datetime
+        target = parsedate_to_datetime(value)
+        if target is None:
+            return None
+        if target.tzinfo is None:
+            target = target.replace(tzinfo=timezone.utc)
+        delta = (target - datetime.now(timezone.utc)).total_seconds()
+        return max(0.0, delta)
+    except (TypeError, ValueError):
+        return None
+
+
 def _retry(fn, max_attempts: int = 4):
+    """Run *fn* with exponential backoff, honouring ``Retry-After`` on 429s.
+
+    When the server responds with HTTP 429 and a ``Retry-After`` header, we
+    sleep at least that long (clamped to ``_RETRY_AFTER_MAX_SECONDS``) before
+    the next attempt instead of the default exponential schedule.  This avoids
+    hammering rate-limited endpoints (Discord webhooks routinely include a
+    short ``Retry-After``; Reddit may return much larger values when a feed is
+    being throttled) and recovers in the minimum time the server asked for.
+    """
     import time
     delay = 2
     last_exc = None
@@ -62,7 +112,14 @@ def _retry(fn, max_attempts: int = 4):
             last_exc = exc
             if not _should_retry(exc) or attempt == max_attempts - 1:
                 raise
-            time.sleep(delay)
+            sleep_for: float = delay
+            if isinstance(exc, urllib.error.HTTPError) and exc.code == 429:
+                headers = getattr(exc, 'headers', None)
+                if headers is not None:
+                    retry_after = _parse_retry_after(headers.get('Retry-After', ''))
+                    if retry_after is not None:
+                        sleep_for = max(sleep_for, min(retry_after, _RETRY_AFTER_MAX_SECONDS))
+            time.sleep(sleep_for)
             delay *= 2
     raise last_exc  # unreachable but satisfies type checkers
 
