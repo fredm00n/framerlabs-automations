@@ -1616,6 +1616,12 @@ class TestNotifyDiscordBatch(unittest.TestCase):
 
     def setUp(self):
         os.environ['DISCORD_WEBHOOK_URL_TEMPLATES'] = 'https://discord.com/api/webhooks/test'
+        # Disable the inter-message rate-limit pacing for the rest of the
+        # batch tests so they remain fast.  Dedicated tests below verify the
+        # delay behaviour with the real value.
+        self._delay_patcher = patch('framer_templates._DISCORD_INTER_MESSAGE_DELAY', 0)
+        self._delay_patcher.start()
+        self.addCleanup(self._delay_patcher.stop)
 
     def test_single_template_summary_embed(self):
         with patch('framer_templates.http_post', return_value={}) as mock_post:
@@ -1785,6 +1791,93 @@ class TestNotifyDiscordBatch(unittest.TestCase):
         self.assertEqual(mock_post.call_count, 2)
         summary_payload = mock_post.call_args_list[0][0][1]
         self.assertIn('embeds', summary_payload)
+
+
+class TestNotifyDiscordBatchRateLimitPacing(unittest.TestCase):
+    """Verify ``notify_discord_batch`` sleeps ``_DISCORD_INTER_MESSAGE_DELAY``
+    between successive webhook POSTs.
+
+    Discord's webhook routes are rate-limited (~5 msgs / 2s); without proactive
+    pacing, a 20-template batch reliably trips a 429 and then has to wait out
+    the server-supplied ``Retry-After`` on every subsequent message — which
+    typically costs more wall-clock time than the small inter-message delay
+    itself.  These tests use the *real* module constant so the behaviour can
+    be verified end-to-end without inflating runtime (``time.sleep`` is
+    patched out so the test still completes instantly).
+    """
+
+    def setUp(self):
+        os.environ['DISCORD_WEBHOOK_URL_TEMPLATES'] = 'https://discord.com/api/webhooks/test'
+
+    def test_sleeps_between_messages_not_before_first(self):
+        """With N payloads we expect exactly N-1 sleeps -- the first message
+        is sent immediately, then each subsequent one is preceded by a
+        ``_DISCORD_INTER_MESSAGE_DELAY`` pause."""
+        templates = [
+            {**_DISCORD_TEMPLATE, 'slug': f'slug-{i}', 'title': f'T{i}'}
+            for i in range(4)
+        ]
+        # 1 summary + 4 embeds = 5 messages, so 4 sleeps expected.
+        with patch('framer_templates.http_post', return_value={}) as mock_post, \
+             patch('framer_templates.time.sleep') as mock_sleep:
+            ft.notify_discord_batch(templates)
+        self.assertEqual(mock_post.call_count, 5)
+        self.assertEqual(mock_sleep.call_count, 4)
+        # All sleeps must use the configured delay.
+        for call in mock_sleep.call_args_list:
+            self.assertEqual(call[0][0], ft._DISCORD_INTER_MESSAGE_DELAY)
+
+    def test_no_sleep_for_single_message_payload(self):
+        """``notify_discord_batch`` for a single template produces a summary
+        embed plus one detail embed = 2 messages, so exactly 1 sleep
+        between them.  No sleep should fire before the first message."""
+        with patch('framer_templates.http_post', return_value={}) as mock_post, \
+             patch('framer_templates.time.sleep') as mock_sleep:
+            ft.notify_discord_batch([_DISCORD_TEMPLATE])
+        self.assertEqual(mock_post.call_count, 2)
+        self.assertEqual(mock_sleep.call_count, 1)
+
+    def test_empty_list_does_not_sleep(self):
+        with patch('framer_templates.http_post') as mock_post, \
+             patch('framer_templates.time.sleep') as mock_sleep:
+            ft.notify_discord_batch([])
+        mock_post.assert_not_called()
+        mock_sleep.assert_not_called()
+
+    def test_sleeps_even_after_failed_message(self):
+        """Pacing must continue even when a single message fails — otherwise a
+        transient failure on message N would let message N+1 be sent without
+        the delay and trip a 429 anyway."""
+        templates = [
+            {**_DISCORD_TEMPLATE, 'slug': f'slug-{i}', 'title': f'T{i}'}
+            for i in range(3)
+        ]
+        # 1 summary + 3 embeds = 4 messages; second one fails.
+        effects = [{}, Exception('fail'), {}, {}]
+        with patch('framer_templates.http_post', side_effect=effects), \
+             patch('framer_templates.time.sleep') as mock_sleep:
+            ft.notify_discord_batch(templates)
+        # 4 messages => 3 sleeps regardless of the failure.
+        self.assertEqual(mock_sleep.call_count, 3)
+
+    def test_delay_zero_skips_sleep_entirely(self):
+        """Setting the constant to 0 must short-circuit the sleep call so
+        unit tests and synchronous tooling can bypass the pacing cleanly."""
+        templates = [
+            {**_DISCORD_TEMPLATE, 'slug': f'slug-{i}', 'title': f'T{i}'}
+            for i in range(3)
+        ]
+        with patch('framer_templates._DISCORD_INTER_MESSAGE_DELAY', 0), \
+             patch('framer_templates.http_post', return_value={}), \
+             patch('framer_templates.time.sleep') as mock_sleep:
+            ft.notify_discord_batch(templates)
+        mock_sleep.assert_not_called()
+
+    def test_delay_is_positive_by_default(self):
+        """The default constant should be > 0 so production runs actually
+        pace.  A regression that set this to 0 would silently re-introduce
+        the rate-limit thrashing that motivated this feature."""
+        self.assertGreater(ft._DISCORD_INTER_MESSAGE_DELAY, 0)
 
 
 # ---------------------------------------------------------------------------
