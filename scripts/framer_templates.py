@@ -723,12 +723,32 @@ def _build_summary_embed(templates: list[dict]) -> dict:
     }
 
 
+# Seconds to wait between successive Discord webhook POSTs in a single batch.
+# Discord enforces tight per-route rate limits on webhook endpoints — empirical
+# limits hover around 5 messages per 2s and a sliding global cap (often ~30
+# messages per 60s).  Sending 20+ embeds back-to-back without pacing reliably
+# trips a 429, after which ``_retry`` has to honour a server-supplied
+# ``Retry-After`` (typically a few seconds) before each subsequent message —
+# burning far more total time than a small proactive delay would.  Half a
+# second between messages keeps us comfortably under the per-route cap while
+# adding at most ~10s to a 20-template batch (a fraction of one ``Retry-After``
+# stall).  Exposed as a module-level constant so tests can patch it to 0 to
+# keep ``notify_discord_batch`` unit tests fast.
+_DISCORD_INTER_MESSAGE_DELAY = 0.5
+
+
 def notify_discord_batch(templates: list[dict]) -> None:
     """Send a grouped summary embed then one Discord message per template.
 
     First message is a rich embed summarising all templates grouped by
     category, followed by one message per template each containing a
     single embed with full details and thumbnail.
+
+    A short ``_DISCORD_INTER_MESSAGE_DELAY`` is slept between consecutive
+    webhook POSTs to stay under Discord's per-route rate limit (~5 msgs / 2s)
+    on large batches.  Without this, a 20-template batch reliably triggers a
+    429 and then has to honour each ``Retry-After`` on subsequent messages,
+    which costs far more wall-clock time than the proactive pacing itself.
     """
     if not templates:
         return
@@ -738,7 +758,11 @@ def notify_discord_batch(templates: list[dict]) -> None:
     # Then one message per template
     for embed in embeds:
         payloads.append({'embeds': [embed]})
-    for payload in payloads:
+    for idx, payload in enumerate(payloads):
+        if idx > 0 and _DISCORD_INTER_MESSAGE_DELAY > 0:
+            # Sleep between messages (not before the first) to stay under
+            # Discord's per-route rate limit.  See module-level comment above.
+            time.sleep(_DISCORD_INTER_MESSAGE_DELAY)
         try:
             http_post(os.environ['DISCORD_WEBHOOK_URL_TEMPLATES'], payload)
         except urllib.error.HTTPError as e:
