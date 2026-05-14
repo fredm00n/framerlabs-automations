@@ -51,7 +51,7 @@ Log rotation: the self-improvement session removes entries older than 7 days aft
 them, then commits the trimmed file.
 
 ### Notifications
-- **Data notifications** (`DISCORD_WEBHOOK_URL_TEMPLATES`, `DISCORD_WEBHOOK_URL_LEADS`): new discoveries. Templates send a grouped summary embed (templates organised by inferred category) followed by one detail embed per template. Each script has its own webhook/channel.
+- **Data notifications** (`DISCORD_WEBHOOK_URL_TEMPLATES`, `DISCORD_WEBHOOK_URL_LEADS`): new discoveries. Templates send one detail embed per template followed by a grouped summary embed at the end (templates organised by inferred category) — the recap sits at the bottom of the channel as a quick index of the batch. Each script has its own webhook/channel.
 - **X/Twitter** (`TWITTER_API_KEY`, `TWITTER_API_SECRET`, `TWITTER_ACCESS_TOKEN`, `TWITTER_ACCESS_TOKEN_SECRET`): templates are also posted as a tweet (max 280 chars) with a category summary and template list. Silently skipped if credentials are not configured.
 - **System alerts** (`DISCORD_ALERTS_WEBHOOK_URL`): system-level warnings and errors (e.g. RSC parse failure, unexpected API errors). Separate channel so operational issues don't get lost in data traffic. All scripts must use `DISCORD_ALERTS_WEBHOOK_URL` for system alerts, not the data webhooks.
 
@@ -93,7 +93,7 @@ Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort
 
 - **Source:** Framer's Next.js RSC endpoint — fetched directly with `Rsc: 1` header, returns structured component data including all templates sorted by recent (no headless browser needed)
 - **State:** Notion DB `Framer Templates` (ID in `NOTION_DATABASE_ID`)
-- **Notifications:** Discord grouped summary embed (by category) + one detail embed per template; optionally posts to X/Twitter (skipped if credentials not set)
+- **Notifications:** Discord one detail embed per template followed by a grouped summary embed (by category) at the end of the batch, so the recap sits at the bottom of the channel as a quick index; optionally posts to X/Twitter (skipped if credentials not set)
 - **Category inference:** categories are inferred from template title/meta_title via keyword matching (e.g. "Restaurant" → Food & Dining, "SaaS" → SaaS & Tech). Categories are not available in the Framer RSC payload. The inferred category is stored as a `select` field in Notion.
 - **First run:** seeds the DB silently — no Discord/X notifications
 - **Fields tracked:** title, slug, URL, author, author URL, price, category, discovered datetime, published datetime

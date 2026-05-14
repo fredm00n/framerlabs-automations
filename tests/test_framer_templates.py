@@ -1690,40 +1690,41 @@ class TestNotifyDiscordBatch(unittest.TestCase):
     def test_single_template_summary_embed(self):
         with patch('framer_templates.http_post', return_value={}) as mock_post:
             ft.notify_discord_batch([_DISCORD_TEMPLATE])
-        # 1 summary embed + 1 detail embed = 2 calls
+        # 1 detail embed + 1 summary embed = 2 calls; summary is last so it
+        # renders at the bottom of the Discord channel as a recap.
         self.assertEqual(mock_post.call_count, 2)
-        summary_payload = mock_post.call_args_list[0][0][1]
+        embed_payload = mock_post.call_args_list[0][0][1]
+        self.assertEqual(len(embed_payload['embeds']), 1)
+        summary_payload = mock_post.call_args_list[-1][0][1]
         self.assertIn('embeds', summary_payload)
         self.assertEqual(summary_payload['embeds'][0]['title'], '1 new Framer template')
-        embed_payload = mock_post.call_args_list[1][0][1]
-        self.assertEqual(len(embed_payload['embeds']), 1)
 
     def test_multiple_templates_summary_plural(self):
         templates = [{**_DISCORD_TEMPLATE, 'slug': f'slug-{i}', 'title': f'T{i}'} for i in range(3)]
         with patch('framer_templates.http_post', return_value={}) as mock_post:
             ft.notify_discord_batch(templates)
-        # 1 summary + 3 embeds = 4 calls
+        # 3 detail embeds + 1 summary = 4 calls; summary is the final call.
         self.assertEqual(mock_post.call_count, 4)
-        summary_payload = mock_post.call_args_list[0][0][1]
+        for i in range(3):
+            self.assertEqual(len(mock_post.call_args_list[i][0][1]['embeds']), 1)
+        summary_payload = mock_post.call_args_list[-1][0][1]
         self.assertIn('embeds', summary_payload)
         self.assertEqual(summary_payload['embeds'][0]['title'], '3 new Framer templates')
-        for i in range(1, 4):
-            self.assertEqual(len(mock_post.call_args_list[i][0][1]['embeds']), 1)
 
     def test_many_templates_sends_one_embed_per_message(self):
         templates = [{**_DISCORD_TEMPLATE, 'slug': f'slug-{i}', 'title': f'T{i}'} for i in range(12)]
         with patch('framer_templates.http_post', return_value={}) as mock_post:
             ft.notify_discord_batch(templates)
-        # 1 summary + 12 individual embeds = 13 calls
+        # 12 individual embeds + 1 summary = 13 calls
         self.assertEqual(mock_post.call_count, 13)
-        # First call is summary embed
-        summary_payload = mock_post.call_args_list[0][0][1]
-        self.assertIn('embeds', summary_payload)
-        self.assertEqual(summary_payload['embeds'][0]['title'], '12 new Framer templates')
-        # Each subsequent call has exactly 1 embed
-        for i in range(1, 13):
+        # Each detail call has exactly 1 embed
+        for i in range(12):
             payload = mock_post.call_args_list[i][0][1]
             self.assertEqual(len(payload['embeds']), 1)
+        # Final call is the summary embed
+        summary_payload = mock_post.call_args_list[-1][0][1]
+        self.assertIn('embeds', summary_payload)
+        self.assertEqual(summary_payload['embeds'][0]['title'], '12 new Framer templates')
 
     def test_empty_list_does_nothing(self):
         with patch('framer_templates.http_post', return_value={}) as mock_post:
@@ -1732,7 +1733,7 @@ class TestNotifyDiscordBatch(unittest.TestCase):
 
     def test_error_in_one_message_does_not_stop_remaining(self):
         templates = [{**_DISCORD_TEMPLATE, 'slug': f'slug-{i}', 'title': f'T{i}'} for i in range(3)]
-        # 4 calls total: summary + 3 embeds; first fails
+        # 4 calls total: 3 embeds + summary; first fails
         effects = [Exception('fail')] + [{}] * 3
         with patch('framer_templates.http_post', side_effect=effects) as mock_post:
             ft.notify_discord_batch(templates)  # must not raise
@@ -1756,8 +1757,8 @@ class TestNotifyDiscordBatch(unittest.TestCase):
     def test_error_log_label_is_title_for_summary_embed(self):
         """The summary embed payload failure logs the summary embed title as label."""
         import error_log as el
-        # Only the summary message fails; subsequent embed calls succeed.
-        with patch('framer_templates.http_post', side_effect=[Exception('fail'), {}]), \
+        # Detail message succeeds; the summary (sent last) fails.
+        with patch('framer_templates.http_post', side_effect=[{}, Exception('fail')]), \
              patch.object(el, 'log_error') as mock_log:
             ft.notify_discord_batch([_DISCORD_TEMPLATE])
         contexts = [call[0][3] for call in mock_log.call_args_list if len(call[0]) >= 4]
@@ -1768,8 +1769,8 @@ class TestNotifyDiscordBatch(unittest.TestCase):
         """An embed payload failure logs the template title as label."""
         import error_log as el
         t = {**_DISCORD_TEMPLATE, 'title': 'My Special Template'}
-        # Summary succeeds; embed fails.
-        with patch('framer_templates.http_post', side_effect=[{}, Exception('fail')]), \
+        # Detail embed fails; the summary (sent last) succeeds.
+        with patch('framer_templates.http_post', side_effect=[Exception('fail'), {}]), \
              patch.object(el, 'log_error') as mock_log:
             ft.notify_discord_batch([t])
         contexts = [call[0][3] for call in mock_log.call_args_list if len(call[0]) >= 4]
@@ -1851,9 +1852,9 @@ class TestNotifyDiscordBatch(unittest.TestCase):
     def test_notify_discord_wrapper_calls_batch(self):
         with patch('framer_templates.http_post', return_value={}) as mock_post:
             ft.notify_discord(_DISCORD_TEMPLATE)
-        # 1 summary embed + 1 detail embed = 2 calls
+        # 1 detail embed + 1 summary embed = 2 calls; summary sent last.
         self.assertEqual(mock_post.call_count, 2)
-        summary_payload = mock_post.call_args_list[0][0][1]
+        summary_payload = mock_post.call_args_list[-1][0][1]
         self.assertIn('embeds', summary_payload)
 
 
@@ -1881,7 +1882,7 @@ class TestNotifyDiscordBatchRateLimitPacing(unittest.TestCase):
             {**_DISCORD_TEMPLATE, 'slug': f'slug-{i}', 'title': f'T{i}'}
             for i in range(4)
         ]
-        # 1 summary + 4 embeds = 5 messages, so 4 sleeps expected.
+        # 4 embeds + 1 summary = 5 messages, so 4 sleeps expected.
         with patch('framer_templates.http_post', return_value={}) as mock_post, \
              patch('framer_templates.time.sleep') as mock_sleep:
             ft.notify_discord_batch(templates)
@@ -1892,8 +1893,8 @@ class TestNotifyDiscordBatchRateLimitPacing(unittest.TestCase):
             self.assertEqual(call[0][0], ft._DISCORD_INTER_MESSAGE_DELAY)
 
     def test_no_sleep_for_single_message_payload(self):
-        """``notify_discord_batch`` for a single template produces a summary
-        embed plus one detail embed = 2 messages, so exactly 1 sleep
+        """``notify_discord_batch`` for a single template produces one detail
+        embed plus a trailing summary embed = 2 messages, so exactly 1 sleep
         between them.  No sleep should fire before the first message."""
         with patch('framer_templates.http_post', return_value={}) as mock_post, \
              patch('framer_templates.time.sleep') as mock_sleep:
@@ -1916,7 +1917,7 @@ class TestNotifyDiscordBatchRateLimitPacing(unittest.TestCase):
             {**_DISCORD_TEMPLATE, 'slug': f'slug-{i}', 'title': f'T{i}'}
             for i in range(3)
         ]
-        # 1 summary + 3 embeds = 4 messages; second one fails.
+        # 3 embeds + 1 summary = 4 messages; second one fails.
         effects = [{}, Exception('fail'), {}, {}]
         with patch('framer_templates.http_post', side_effect=effects), \
              patch('framer_templates.time.sleep') as mock_sleep:

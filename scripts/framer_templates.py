@@ -782,11 +782,12 @@ _DISCORD_INTER_MESSAGE_DELAY = 0.5
 
 
 def notify_discord_batch(templates: list[dict]) -> None:
-    """Send a grouped summary embed then one Discord message per template.
+    """Send one Discord message per template, then a grouped summary embed.
 
-    First message is a rich embed summarising all templates grouped by
-    category, followed by one message per template each containing a
-    single embed with full details and thumbnail.
+    Individual template messages each contain a single embed with full
+    details and thumbnail; the final message is a rich embed summarising
+    all templates grouped by category, so the recap sits at the bottom of
+    the channel where it is most useful as a quick index of the batch.
 
     A short ``_DISCORD_INTER_MESSAGE_DELAY`` is slept between consecutive
     webhook POSTs to stay under Discord's per-route rate limit (~5 msgs / 2s)
@@ -797,11 +798,8 @@ def notify_discord_batch(templates: list[dict]) -> None:
     if not templates:
         return
     embeds = [_build_embed(t) for t in templates]
-    # First message: grouped summary embed
-    payloads: list[dict] = [{'embeds': [_build_summary_embed(templates)]}]
-    # Then one message per template
-    for embed in embeds:
-        payloads.append({'embeds': [embed]})
+    payloads: list[dict] = [{'embeds': [embed]} for embed in embeds]
+    payloads.append({'embeds': [_build_summary_embed(templates)]})
     for idx, payload in enumerate(payloads):
         if idx > 0 and _DISCORD_INTER_MESSAGE_DELAY > 0:
             # Sleep between messages (not before the first) to stay under
