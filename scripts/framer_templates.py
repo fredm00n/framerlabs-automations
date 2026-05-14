@@ -337,6 +337,17 @@ def fetch_from_rsc() -> list[dict]:
     # Pages are cumulative: page=2 returns items 1-40, etc.
     # We fetch up to 2 pages (40 templates) and stop early when a page adds fewer than
     # 20 new items, which means we've reached the last page.
+    #
+    # If page 1 succeeds but page 2 fails (network error, HTTP 5xx after retries,
+    # read timeout, etc.) we keep the page-1 data and continue — there is no reason
+    # to throw away 20 valid templates because of a transient failure on the second
+    # page.  Only a page-1 failure is treated as fatal, since without page 1 we have
+    # no data at all to compare against the seen-slugs set.  This mirrors the
+    # general principle used elsewhere in the codebase (e.g. ``reddit_leads.py``
+    # tolerates a subset of subreddit-feed failures and only escalates when the
+    # majority fail) and means a single bad fetch cannot cost us a discovery
+    # window for the newest 20 templates — exactly the ones a 15-min cron is
+    # most likely to find first.
     seen: set[str] = set()
     templates: list[dict] = []
     bodies: list[str] = []
@@ -347,7 +358,40 @@ def fetch_from_rsc() -> list[dict]:
         url = 'https://www.framer.com/marketplace/templates/?sort=recent'
         if page > 1:
             url += f'&page={page}'
-        body = http_get(url, headers=_RSC_HEADERS)
+        try:
+            body = http_get(url, headers=_RSC_HEADERS)
+        except Exception as exc:
+            if page == 1:
+                # Page 1 failure is fatal — re-raise so main() can alert.
+                raise
+            # Page 2 failure with valid page-1 data: log a warning and continue
+            # with what we have.  Capture the HTTP response body (if available)
+            # for diagnostic continuity with the rest of the codebase.
+            response_body = ''
+            status: int | None = None
+            if isinstance(exc, urllib.error.HTTPError):
+                status = exc.code
+                try:
+                    response_body = exc.read().decode('utf-8', errors='replace')[:500]
+                except Exception:
+                    pass
+            ctx: dict = {
+                'page': page,
+                'error': str(exc),
+                'page1_templates': len(templates),
+            }
+            if status is not None:
+                ctx['status'] = status
+            if response_body:
+                ctx['response_body'] = response_body
+            print(f'Page {page} fetch failed; continuing with {len(templates)} '
+                  f'template(s) from earlier page(s): {exc}')
+            error_log.log_error(
+                'framer_templates', 'warning',
+                f'RSC page {page} fetch failed — using earlier pages only',
+                ctx,
+            )
+            break
         bodies.append(body)
 
         count_before = len(templates)
