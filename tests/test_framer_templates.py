@@ -389,6 +389,70 @@ class TestFetchFromRsc(unittest.TestCase):
             templates = ft.fetch_from_rsc()
         self.assertEqual(len(templates), 35)
 
+    def test_page2_failure_keeps_page1_templates(self):
+        """If page 2 fetch fails after page 1 succeeded, keep the page-1 data.
+
+        A full first page would normally trigger a page-2 fetch; if that fetch
+        raises (network error, retries exhausted, HTTP 5xx), the script must
+        not throw away the 20 valid page-1 templates that were already parsed.
+        """
+        page1 = _full_page(0)
+        with patch('framer_templates.http_get',
+                   side_effect=[page1, urllib.error.URLError('network unreachable')]):
+            templates = ft.fetch_from_rsc()
+        self.assertEqual(len(templates), 20)
+        slugs = {t['slug'] for t in templates}
+        self.assertIn('slug-0', slugs)
+        self.assertIn('slug-19', slugs)
+
+    def test_page2_failure_logs_warning_with_context(self):
+        """Page-2 fetch failure must be logged with page, error, and page1_templates context."""
+        import error_log as el
+        page1 = _full_page(0)
+        with patch('framer_templates.http_get',
+                   side_effect=[page1, urllib.error.URLError('boom')]), \
+             patch.object(el, 'log_error') as mock_log:
+            ft.fetch_from_rsc()
+        # Must have at least one warning mentioning page 2 fetch
+        page2_calls = [
+            c for c in mock_log.call_args_list
+            if len(c[0]) >= 3 and 'page 2 fetch failed' in str(c[0][2]).lower()
+        ]
+        self.assertTrue(page2_calls, 'Expected a warning for page-2 fetch failure')
+        ctx = page2_calls[0][0][3] if len(page2_calls[0][0]) >= 4 else {}
+        self.assertEqual(ctx.get('page'), 2)
+        self.assertEqual(ctx.get('page1_templates'), 20)
+        self.assertIn('error', ctx)
+
+    def test_page2_http_error_includes_status_in_context(self):
+        """When page 2 raises HTTPError, the log context must include the status code."""
+        import error_log as el
+        page1 = _full_page(0)
+        # Build a real-ish HTTPError; .read() may raise so we patch it.
+        http_err = urllib.error.HTTPError(
+            'https://www.framer.com/marketplace/templates/?sort=recent&page=2',
+            503, 'Service Unavailable', {}, None,
+        )
+        with patch('framer_templates.http_get',
+                   side_effect=[page1, http_err]), \
+             patch.object(el, 'log_error') as mock_log:
+            ft.fetch_from_rsc()
+        page2_calls = [
+            c for c in mock_log.call_args_list
+            if len(c[0]) >= 4 and isinstance(c[0][3], dict)
+            and c[0][3].get('page') == 2
+        ]
+        self.assertTrue(page2_calls)
+        ctx = page2_calls[0][0][3]
+        self.assertEqual(ctx.get('status'), 503)
+
+    def test_page1_failure_still_raises(self):
+        """A failure on page 1 must still raise — there is no data to fall back on."""
+        with patch('framer_templates.http_get',
+                   side_effect=urllib.error.URLError('connection refused')):
+            with self.assertRaises(urllib.error.URLError):
+                ft.fetch_from_rsc()
+
 
 # ---------------------------------------------------------------------------
 # _parse_rsc_body
