@@ -1594,6 +1594,56 @@ class TestBuildEmbed(unittest.TestCase):
         embed = ft._build_embed(_DISCORD_TEMPLATE)
         self.assertNotIn('remix', embed['description'])
 
+    def test_title_truncated_to_discord_256_char_limit(self):
+        # Discord rejects embed titles > 256 chars with HTTP 400 "Invalid Form
+        # Body".  A Framer template with an unusually long title would
+        # otherwise drop the entire notification for that template.
+        long_title = 'X' * 400
+        t = {**_DISCORD_TEMPLATE, 'title': long_title}
+        embed = ft._build_embed(t)
+        self.assertEqual(len(embed['title']), 256)
+        self.assertEqual(embed['title'], 'X' * 256)
+
+    def test_title_unchanged_when_under_limit(self):
+        # Regression guard: a title at or below the limit must not be sliced
+        # by even one character — Discord's limit is inclusive.
+        title = 'A' * 256
+        t = {**_DISCORD_TEMPLATE, 'title': title}
+        embed = ft._build_embed(t)
+        self.assertEqual(embed['title'], title)
+
+    def test_description_truncated_to_discord_4096_char_limit(self):
+        # A pathologically long meta_title could push the embed description
+        # past Discord's 4096-char limit.  Truncating defensively means the
+        # webhook POST cannot be rejected for that reason.
+        huge_meta_title = 'M' * 5000
+        t = {**_DISCORD_TEMPLATE, 'meta_title': huge_meta_title}
+        embed = ft._build_embed(t)
+        self.assertLessEqual(len(embed['description']), 4096)
+
+    def test_timestamp_omitted_when_published_at_unparseable(self):
+        # Defensive guard: an unparseable published_at (e.g. a residual "$D"
+        # prefix left over from a future RSC format change, or a stray
+        # non-ISO sentinel) would otherwise 400 the entire webhook POST.
+        # Mirrors the same guard already in notify_discord_lead.
+        for bad_value in ('$D2026-03-15T10:00:00.000Z', 'not-a-date',
+                          '2026/03/15', 'null'):
+            with self.subTest(bad_value=bad_value):
+                t = {**_DISCORD_TEMPLATE, 'published_at': bad_value}
+                embed = ft._build_embed(t)
+                self.assertNotIn('timestamp', embed)
+
+    def test_timestamp_set_when_published_at_iso8601_with_offset(self):
+        # The RSC payload's "$D" prefix is stripped during parsing, leaving
+        # a plain ISO 8601 string.  Verify that the common forms
+        # (Z-suffix UTC and explicit offset) are accepted by the guard.
+        for good_value in ('2026-03-15T10:00:00Z', '2026-03-15T10:00:00+00:00',
+                           '2026-03-15T10:00:00.123+02:00'):
+            with self.subTest(good_value=good_value):
+                t = {**_DISCORD_TEMPLATE, 'published_at': good_value}
+                embed = ft._build_embed(t)
+                self.assertEqual(embed.get('timestamp'), good_value)
+
 
 # ---------------------------------------------------------------------------
 # _build_summary_embed

@@ -697,8 +697,26 @@ def save_to_notion(template: dict) -> None:
 # Discord
 # ---------------------------------------------------------------------------
 
+# Discord embed field limits (see Discord developer docs — "Embed Limits").
+# Any field that exceeds these limits causes the webhook POST to be rejected
+# with HTTP 400 ``Invalid Form Body`` — losing the notification for that
+# template entirely.  Truncating defensively at build time means a
+# pathological Framer template (e.g. a 300-char title) cannot break a batch.
+_DISCORD_EMBED_TITLE_LIMIT = 256
+_DISCORD_EMBED_DESCRIPTION_LIMIT = 4096
+
+
 def _build_embed(template: dict) -> dict:
-    """Build a Discord embed dict for a single template."""
+    """Build a Discord embed dict for a single template.
+
+    Fields are bounded to Discord's documented per-field limits so that a
+    pathologically long title or meta_title cannot 400 the webhook and drop
+    the notification.  The ``timestamp`` field is silently omitted when the
+    stored ``published_at`` does not parse as ISO 8601 — mirrors the same
+    defensive guard used by ``notify_discord_lead`` in ``reddit_leads.py``
+    for the equivalent Reddit ``post_date`` field, and protects against a
+    residual ``$D`` prefix left over from a future RSC format change.
+    """
     author = template.get('author', 'unknown')
     author_slug = template.get('author_slug', '')
     price = template.get('price', '?')
@@ -717,17 +735,31 @@ def _build_embed(template: dict) -> dict:
     if remixes:
         description += f"\n{remixes} remix{'es' if remixes != 1 else ''}"
     embed: dict = {
-        'title': template['title'],
+        # Truncate to Discord's 256-char embed-title limit.  Framer template
+        # titles are usually short, but the source field is uncontrolled — a
+        # title approaching the limit would otherwise 400 the webhook.
+        # Mirrors ``lead['title'][:256]`` already used by ``notify_discord_lead``
+        # in ``reddit_leads.py``.
+        'title': template['title'][:_DISCORD_EMBED_TITLE_LIMIT],
         'url': template['url'],
-        'description': description,
+        'description': description[:_DISCORD_EMBED_DESCRIPTION_LIMIT],
         'color': 0x5865F2,
     }
     if template.get('thumbnail'):
         embed['image'] = {'url': template['thumbnail']}
-    # Show when the template was published so Discord renders a human-readable date
+    # Show when the template was published so Discord renders a human-readable
+    # date.  Discord requires a valid ISO 8601 string here, so a malformed
+    # value (e.g. a residual ``$D`` prefix from a future RSC format change, or
+    # an unexpected null-style sentinel) would 400 the webhook for the whole
+    # template.  Silently omit ``timestamp`` when the parse fails — matches
+    # the defensive guard in ``notify_discord_lead`` in ``reddit_leads.py``.
     published_at = template.get('published_at', '')
     if published_at:
-        embed['timestamp'] = published_at
+        try:
+            datetime.fromisoformat(published_at)
+            embed['timestamp'] = published_at
+        except (ValueError, TypeError):
+            pass
     return embed
 
 
