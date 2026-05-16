@@ -1549,6 +1549,25 @@ class TestBuildEmbed(unittest.TestCase):
         embed = ft._build_embed(t)
         self.assertIn('[Live Demo](https://mysite.framer.website/)', embed['description'])
 
+    def test_description_escapes_bracket_in_author_link_text(self):
+        # An author whose Framer display name contains ``[`` or ``]`` would
+        # otherwise terminate the markdown link early and dump ``](profile-url)``
+        # into the description as plain text.  Verify the brackets are escaped.
+        t = {**_DISCORD_TEMPLATE, 'author': 'Jane [Studio]'}
+        embed = ft._build_embed(t)
+        self.assertIn(
+            r'[Jane \[Studio\]](https://www.framer.com/marketplace/profiles/bob-studio/)',
+            embed['description'],
+        )
+
+    def test_description_escapes_closing_paren_in_demo_url(self):
+        # A demo URL containing ``)`` (e.g. a parenthesised path segment)
+        # would terminate the markdown link early — escape it so the full
+        # URL is preserved as the link target.
+        t = {**_DISCORD_TEMPLATE, 'demo_url': 'https://example.com/path(v1)/'}
+        embed = ft._build_embed(t)
+        self.assertIn(r'[Live Demo](https://example.com/path(v1\)/)', embed['description'])
+
     def test_description_excludes_demo_url_when_absent(self):
         embed = ft._build_embed(_DISCORD_TEMPLATE)
         self.assertNotIn('Live Demo', embed['description'])
@@ -1720,6 +1739,74 @@ class TestBuildSummaryEmbed(unittest.TestCase):
                     prev.startswith('**') and prev.endswith('**'),
                     f'Orphaned category header before truncation line: {prev!r}',
                 )
+
+    def test_escapes_bracket_in_title_to_preserve_markdown_link(self):
+        # A title containing ``]`` would otherwise terminate the Discord
+        # markdown link early — the renderer would treat ``Pro`` as a link to
+        # ``Brand`` and dump ``](url)`` as visible plain text.  Verify the
+        # bracket is backslash-escaped inside the ``[...]`` segment.
+        t = _template(title='Brand [Pro]', slug='brand-pro')
+        embed = ft._build_summary_embed([t])
+        self.assertIn(r'[Brand \[Pro\]](', embed['description'])
+        # Raw unescaped ``]`` must not appear before the closing ``](``.
+        self.assertNotIn('[Brand [Pro]]', embed['description'])
+
+    def test_escapes_closing_paren_in_url_to_preserve_markdown_link(self):
+        # A URL containing ``)`` would terminate the markdown link early.
+        # Verify ``)`` in the URL segment is backslash-escaped.
+        t = _template(title='Weird', slug='weird')
+        t['url'] = 'https://example.com/path(v1)/'
+        embed = ft._build_summary_embed([t])
+        self.assertIn(r'(https://example.com/path(v1\)/)', embed['description'])
+
+    def test_escapes_backslash_in_title(self):
+        # A literal backslash in the title must itself be escaped so it does
+        # not interact with subsequent characters (e.g. a trailing ``\]``
+        # would otherwise look like an already-escaped ``]``).
+        t = _template(title=r'Foo\Bar', slug='foo-bar')
+        embed = ft._build_summary_embed([t])
+        self.assertIn(r'[Foo\\Bar]', embed['description'])
+
+
+# ---------------------------------------------------------------------------
+# _escape_md_link_text / _escape_md_link_url
+# ---------------------------------------------------------------------------
+
+class TestEscapeMarkdownLinkHelpers(unittest.TestCase):
+
+    def test_link_text_escapes_brackets(self):
+        self.assertEqual(ft._escape_md_link_text('Brand [Pro]'), r'Brand \[Pro\]')
+
+    def test_link_text_escapes_backslash_before_other_chars(self):
+        # Backslash must be escaped first so the ``\\]`` below cannot be
+        # misread by the markdown parser as an already-escaped ``]``.
+        self.assertEqual(ft._escape_md_link_text(r'A\B'), r'A\\B')
+        # Combined backslash + bracket: backslash doubles first, then ``]``
+        # is escaped, yielding ``\\\]`` (two backslashes then escaped ``]``).
+        self.assertEqual(ft._escape_md_link_text(r'A\]B'), r'A\\\]B')
+
+    def test_link_text_passthrough_for_clean_string(self):
+        self.assertEqual(ft._escape_md_link_text('Clean Title 123'), 'Clean Title 123')
+
+    def test_link_text_empty_input(self):
+        self.assertEqual(ft._escape_md_link_text(''), '')
+
+    def test_link_url_escapes_closing_paren(self):
+        self.assertEqual(
+            ft._escape_md_link_url('https://example.com/path(v1)/'),
+            r'https://example.com/path(v1\)/',
+        )
+
+    def test_link_url_escapes_backslash_before_paren(self):
+        # Backslash escapes first; the trailing ``)`` then gets its own escape.
+        self.assertEqual(ft._escape_md_link_url(r'a\b)c'), r'a\\b\)c')
+
+    def test_link_url_passthrough_for_clean_url(self):
+        url = 'https://www.framer.com/marketplace/templates/foo/'
+        self.assertEqual(ft._escape_md_link_url(url), url)
+
+    def test_link_url_empty_input(self):
+        self.assertEqual(ft._escape_md_link_url(''), '')
 
 
 # ---------------------------------------------------------------------------

@@ -706,6 +706,42 @@ _DISCORD_EMBED_TITLE_LIMIT = 256
 _DISCORD_EMBED_DESCRIPTION_LIMIT = 4096
 
 
+def _escape_md_link_text(text: str) -> str:
+    """Escape characters that would break a Discord markdown link's text segment.
+
+    Discord renders ``[TEXT](URL)`` as a clickable link with ``TEXT`` as the
+    visible label.  The parser is non-greedy with ``]`` — the first unescaped
+    ``]`` terminates the link text — so a template/author name containing ``]``
+    (e.g. ``"Brand [Pro]"``) would render with a broken, mid-sentence link and
+    the remainder of the title leaking out as plain text followed by a stray
+    ``(url)``.  Backslash, ``[``, and ``]`` must be escaped with a leading
+    backslash to preserve them verbatim inside the link text.  Other markdown
+    metacharacters (``*``/``_``/`` ` ``/``~`` etc.) are kept unescaped here:
+    Discord ignores them inside link-text in practice, and escaping them would
+    visibly clutter the description for the common case of clean names.
+    """
+    if not text:
+        return text
+    return text.replace('\\', '\\\\').replace('[', r'\[').replace(']', r'\]')
+
+
+def _escape_md_link_url(url: str) -> str:
+    """Escape characters that would break a Discord markdown link's URL segment.
+
+    Discord matches the URL portion of ``[TEXT](URL)`` up to the first
+    unescaped ``)`` — so a URL containing ``)`` (most commonly when a Framer
+    template's ``demo_url`` points at a CDN-style path with a parenthesised
+    parameter) terminates the link early, leaving the rest of the URL as
+    plain text.  Backslash and ``)`` are escaped with a leading backslash.
+    Whitespace and other characters that should be URL-encoded are not handled
+    here — Framer-issued URLs are well-formed slugs, so a defensive escape of
+    just the link-terminating characters is sufficient.
+    """
+    if not url:
+        return url
+    return url.replace('\\', '\\\\').replace(')', r'\)')
+
+
 def _build_embed(template: dict) -> dict:
     """Build a Discord embed dict for a single template.
 
@@ -724,14 +760,26 @@ def _build_embed(template: dict) -> dict:
     demo_url = template.get('demo_url', '')
     remixes = template.get('remixes') or 0
     if author_slug:
-        author_text = f"[{author}](https://www.framer.com/marketplace/profiles/{author_slug}/)"
+        # Escape ``]`` inside the link text — an author whose display name
+        # contains ``[`` or ``]`` (e.g. ``"Jane [Studio]"``) would otherwise
+        # terminate the markdown link early and spill ``(profile-url)`` into
+        # the description as visible plain text.  ``author_slug`` is a Framer
+        # slug (lowercase-alphanumeric + hyphens) so the URL segment is safe,
+        # but we still defensively escape ``)`` in the URL for symmetry with
+        # the demo-link path below.
+        profile_url = f"https://www.framer.com/marketplace/profiles/{author_slug}/"
+        author_text = f"[{_escape_md_link_text(author)}]({_escape_md_link_url(profile_url)})"
     else:
         author_text = author
     description = f"by {author_text} · **{price}**"
     if meta_title:
         description += f"\n{meta_title}"
     if demo_url:
-        description += f"\n[Live Demo]({demo_url})"
+        # ``demo_url`` is uncontrolled — a Framer template can point its live
+        # preview at any URL.  Escape ``)`` so a parenthesised query-string
+        # parameter cannot terminate the markdown link early and leak the
+        # remainder of the URL into the description.
+        description += f"\n[Live Demo]({_escape_md_link_url(demo_url)})"
     if remixes:
         description += f"\n{remixes} remix{'es' if remixes != 1 else ''}"
     embed: dict = {
@@ -776,7 +824,19 @@ def _build_summary_embed(templates: list[dict]) -> dict:
         for t in items:
             author = t.get('author', 'unknown')
             price = t.get('price', '?')
-            line = f"- [{t['title']}]({t['url']}) by {author} -- {price}"
+            # Escape ``[``/``]`` in the title (link text) and ``)`` in the URL
+            # so a template whose name contains ``"[Pro]"`` or whose URL
+            # contains a parenthesised path cannot break the markdown link in
+            # Discord — without escaping, the first unescaped ``]`` terminates
+            # the link text and the remainder of the title leaks out as plain
+            # text alongside a stray ``(url)``.  Author is rendered outside the
+            # link, so it stays unescaped here (matching the per-template
+            # ``_build_embed`` path which only escapes the author when it is
+            # part of a markdown link).
+            line = (
+                f"- [{_escape_md_link_text(t['title'])}]"
+                f"({_escape_md_link_url(t['url'])}) by {author} -- {price}"
+            )
             if len('\n'.join(lines + [line])) > 3900:
                 # If the category header was just added with no items under it yet,
                 # remove it to avoid an orphaned header above the "... and N more" line.
