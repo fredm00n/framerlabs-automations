@@ -12,6 +12,7 @@ sys.path.insert(0, '.')
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts'))
 from scripts.reddit_leads import (
     _RETRY_AFTER_MAX_SECONDS,
+    _VALID_STATUSES,
     _clean_html,
     _is_valid_iso8601_date,
     _parse_retry_after,
@@ -1169,6 +1170,88 @@ class TestUpdateLeadStatus(unittest.TestCase):
         notes = props['Review Notes']['rich_text'][0]['text']['content']
         utf16_units = len(notes.encode('utf-16-le')) // 2
         self.assertLessEqual(utf16_units, 2000)
+
+    @patch('scripts.reddit_leads.http_patch')
+    def test_accepts_all_valid_statuses(self, mock_patch):
+        """Each canonical status must round-trip cleanly through update_lead_status."""
+        mock_patch.return_value = {}
+        for status in ('pending', 'approved', 'rejected', 'failed'):
+            update_lead_status('page-xyz', status, 'note')
+            props = mock_patch.call_args[0][1]['properties']
+            self.assertEqual(props['Status']['select']['name'], status)
+
+    @patch('scripts.reddit_leads.http_patch')
+    def test_rejects_typo_status_without_hitting_notion(self, mock_patch):
+        """A typo like 'approve' must raise ValueError before any HTTP call."""
+        # Without the validation guard, Notion silently creates a new select
+        # option for any string, orphaning the lead from every later query.
+        with self.assertRaises(ValueError) as cm:
+            update_lead_status('page-xyz', 'approve', 'looks fine')
+        # The error message must name the bad value and the accepted set so
+        # an operator can fix the typo from the log alone.
+        self.assertIn('approve', str(cm.exception))
+        self.assertIn('approved', str(cm.exception))
+        # No Notion patch should have been issued.
+        mock_patch.assert_not_called()
+
+    @patch('scripts.reddit_leads.http_patch')
+    def test_rejects_empty_status(self, mock_patch):
+        """An empty status string must raise rather than silently clearing the field."""
+        with self.assertRaises(ValueError):
+            update_lead_status('page-xyz', '', 'note')
+        mock_patch.assert_not_called()
+
+    @patch('scripts.reddit_leads.http_patch')
+    def test_rejects_uppercase_status(self, mock_patch):
+        """Status matching is case-sensitive — 'Approved' is not 'approved'."""
+        # Notion select option names are case-sensitive; the existing 'approved'
+        # option would not be matched by 'Approved', so we reject that too.
+        with self.assertRaises(ValueError):
+            update_lead_status('page-xyz', 'Approved', 'note')
+        mock_patch.assert_not_called()
+
+    def test_valid_statuses_set_is_frozen(self):
+        """``_VALID_STATUSES`` must be a frozenset so it cannot be mutated at runtime."""
+        # A regular ``set`` would be vulnerable to an accidental ``.add`` that
+        # widens the accepted values without code review; use frozenset.
+        self.assertIsInstance(_VALID_STATUSES, frozenset)
+        self.assertEqual(
+            _VALID_STATUSES, frozenset({'pending', 'approved', 'rejected', 'failed'})
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestUpdateStatusCli — the --update-status CLI must reject invalid statuses
+# with a non-zero exit so a reviewer typo cannot silently orphan a lead.
+# ---------------------------------------------------------------------------
+
+class TestUpdateStatusCli(unittest.TestCase):
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+    })
+    @patch('scripts.reddit_leads.load_dotenv')
+    @patch('scripts.reddit_leads.update_lead_status')
+    def test_passes_valid_status_through(self, mock_update, mock_env):
+        cli(['--update-status', 'page-1', 'approved', 'Looks', 'fine'])
+        # The notes argument joins all trailing args with spaces.
+        mock_update.assert_called_once_with('page-1', 'approved', 'Looks fine')
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+    })
+    @patch('scripts.reddit_leads.load_dotenv')
+    def test_typo_status_exits_non_zero(self, mock_env):
+        """A reviewer typo like 'approve' must exit non-zero without writing to Notion."""
+        # We let the real update_lead_status raise; no Notion mock needed
+        # because the ValueError must fire before any HTTP call.
+        with patch('scripts.reddit_leads.http_patch') as mock_patch:
+            with self.assertRaises(SystemExit) as cm:
+                cli(['--update-status', 'page-1', 'approve', 'reason'])
+            self.assertNotEqual(cm.exception.code, 0)
+            mock_patch.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

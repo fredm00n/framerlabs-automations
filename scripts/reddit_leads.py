@@ -630,8 +630,35 @@ def get_lead_by_id(page_id: str) -> dict:
     }
 
 
+# The set of Status values the script and reviewer session legitimately use.
+# Notion ``select`` fields silently create a new option for any unknown name —
+# so a reviewer typo like ``"approve"`` (missing the trailing ``"d"``) or
+# ``"rejcted"`` would not raise, but the resulting page would not match the
+# ``Status='approved'`` filter used by ``--notify`` / ``--list-unnotified-
+# approved``, and would not match the ``Status='pending'`` filter used by
+# ``--list-pending`` either — the lead would be orphaned and silently lost.
+# ``pending`` and ``failed`` are written by Phase 1 (this script's ``main()``);
+# ``approved`` and ``rejected`` are written by the Phase 2 reviewer session
+# via the ``--update-status`` CLI.
+_VALID_STATUSES = frozenset({'pending', 'approved', 'rejected', 'failed'})
+
+
 def update_lead_status(page_id: str, status: str, notes: str) -> None:
-    """Update the Status and Review Notes fields on a Notion page."""
+    """Update the Status and Review Notes fields on a Notion page.
+
+    ``status`` is validated against ``_VALID_STATUSES``; an unknown value raises
+    ``ValueError`` *before* any Notion request is made.  Without this guard, a
+    typo would silently create a brand-new Notion select option and orphan the
+    lead (it would no longer match any of the queries the rest of the script
+    relies on — ``Status='pending'``, ``'approved'``, ``'rejected'``, or
+    ``'failed'``), so catching it at the source is much cheaper than recovering
+    from it later.
+    """
+    if status not in _VALID_STATUSES:
+        raise ValueError(
+            f'Invalid status {status!r}; expected one of '
+            f'{sorted(_VALID_STATUSES)}'
+        )
     http_patch(
         f'https://api.notion.com/v1/pages/{page_id}',
         {
@@ -1001,7 +1028,14 @@ def cli(args: list[str]) -> None:
         load_dotenv()
         page_id, status = args[1], args[2]
         notes = ' '.join(args[3:])
-        update_lead_status(page_id, status, notes)
+        # Validate the status before hitting Notion so a reviewer typo is
+        # rejected with a clear error message instead of silently creating a
+        # bogus select option that would orphan the lead from all later queries.
+        try:
+            update_lead_status(page_id, status, notes)
+        except ValueError as e:
+            print(f'update-status failed: {e}', file=sys.stderr)
+            raise SystemExit(2)
         print(f'Updated {page_id} → {status}')
         return
 
