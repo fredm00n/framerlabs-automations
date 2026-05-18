@@ -95,11 +95,23 @@ _JOB_SEEKER_SIGNALS = frozenset({
 _ALWAYS_EXCLUDE = frozenset({
     'how to ', 'how do i ', 'tutorial', 'course', 'learning framer',
     'framer beginner', 'getting started with',
-    'feedback on my', 'critique my', 'roast my', 'rate my',
+    'feedback on my', 'critique my', 'roast my',
     'what do you think', 'need feedback', 'honest feedback',
     'frustrated with', 'disappointed with', 'beware of', 'warning:',
     'framer pricing', 'framer cost', 'framer vs', 'how much does framer',
     'framer subscription',
+})
+
+# Phrases excluded only when the *first* word appears as a whole word —
+# avoids false positives where the phrase is a substring of an unrelated
+# word.  ``'rate my'`` must not match inside ``'migrate my website'``
+# because ``'migrate'`` ends in ``'rate'``; plain substring matching would
+# silently drop the textbook hiring post "[Hiring] need to migrate my
+# website from Squarespace to Framer, paid".  Using ``\b`` before the
+# first word catches ``'rate my design'`` (a genuine
+# feedback-request post) but not ``'migrate my …'``.
+_ALWAYS_EXCLUDE_WORD_START_PHRASES = frozenset({
+    'rate my',
 })
 
 
@@ -108,11 +120,27 @@ def _has(text: str, signals: frozenset) -> bool:
     return any(s in tl for s in signals)
 
 
+def _has_word_start_phrase(text: str, phrases: frozenset) -> bool:
+    """Return True if any phrase in *phrases* appears with its first word as a whole word.
+
+    Unlike plain substring matching, this prevents phrases from matching when
+    the first word is a suffix of a longer word.  For example, ``'rate my'``
+    matches ``'rate my design'`` but not ``'migrate my website'`` (where
+    ``'rate'`` is embedded inside ``'migrate'``).  Mirrors the same helper in
+    ``dub-affiliate-scanner/scripts/reddit_scanner.py``.
+    """
+    tl = text.lower()
+    return any(bool(re.search(r'\b' + re.escape(p), tl)) for p in phrases)
+
+
 def passes_light_filter(title: str, content: str, subreddit: str) -> bool:
     """Return True if this post is worth saving for Claude to review."""
     text = f'{title} {content}'
 
     if _has(text, _ALWAYS_EXCLUDE) or _has(text, _JOB_SEEKER_SIGNALS):
+        return False
+
+    if _has_word_start_phrase(text, _ALWAYS_EXCLUDE_WORD_START_PHRASES):
         return False
 
     if subreddit in _HIRING:

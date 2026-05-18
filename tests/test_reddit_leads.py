@@ -11,9 +11,11 @@ from unittest.mock import MagicMock, call, patch
 sys.path.insert(0, '.')
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts'))
 from scripts.reddit_leads import (
+    _ALWAYS_EXCLUDE_WORD_START_PHRASES,
     _RETRY_AFTER_MAX_SECONDS,
     _VALID_STATUSES,
     _clean_html,
+    _has_word_start_phrase,
     _is_valid_iso8601_date,
     _parse_retry_after,
     _retry,
@@ -502,6 +504,79 @@ class TestPassesLightFilter(unittest.TestCase):
         self.assertFalse(passes_light_filter(
             'Best Framer tutorial for beginners', 'Tutorial course for learning framer', 'webdev'
         ))
+
+    # --- Word-start exclusion: 'rate my' must not match 'migrate my' ---
+
+    def test_rate_my_design_post_excluded(self):
+        # Genuine feedback-request post — should be excluded as it was before.
+        self.assertFalse(passes_light_filter(
+            'Rate my Framer portfolio',
+            'Just finished my site, please rate my design',
+            'framer',
+        ))
+
+    def test_rate_my_website_post_excluded(self):
+        # Another feedback-request variant — should be excluded.
+        self.assertFalse(passes_light_filter(
+            'Rate my website',
+            'Just launched my new website, rate my work please',
+            'webdev',
+        ))
+
+    def test_migrate_my_website_hiring_post_passes(self):
+        # Textbook high-intent hiring post.  Under plain-substring matching
+        # ``'rate my'`` would silently match inside ``'migrate my'`` and the
+        # post would be dropped despite carrying both a hire signal and a
+        # payment signal — exactly the lead the reviewer most wants to see.
+        self.assertTrue(passes_light_filter(
+            '[HIRING] Need someone to migrate my website from Squarespace to Framer',
+            'Budget $3000, looking to hire a Framer expert. Please DM with quote.',
+            'forhire',
+        ))
+
+    def test_migrate_my_site_hiring_post_passes_in_business_sub(self):
+        # Same regression in a business subreddit (uses BUSINESS_WEB + HIRE
+        # gate).  ``'website'`` satisfies BUSINESS_WEB and ``'looking to
+        # hire'`` satisfies HIRE_SIGNALS — the only thing that would block
+        # this lead is the spurious ``'rate my'`` substring inside
+        # ``'migrate my'``.
+        self.assertTrue(passes_light_filter(
+            'Looking to hire — need to migrate my website',
+            'We need to migrate my website from Wix to Framer, paid project.',
+            'startups',
+        ))
+
+    def test_has_word_start_phrase_matches_rate_my_at_start(self):
+        # 'rate my' as the leading two words is a true exclusion target.
+        self.assertTrue(_has_word_start_phrase('rate my framer site', frozenset({'rate my'})))
+
+    def test_has_word_start_phrase_matches_rate_my_after_word_boundary(self):
+        # 'rate my' preceded by whitespace is still a whole-word match for 'rate'.
+        self.assertTrue(_has_word_start_phrase(
+            'please rate my framer site', frozenset({'rate my'})
+        ))
+
+    def test_has_word_start_phrase_rejects_migrate_my(self):
+        # 'migrate my' must NOT match the phrase 'rate my' even though 'rate'
+        # is a substring of 'migrate' — this is the whole point of the helper.
+        self.assertFalse(_has_word_start_phrase(
+            'need to migrate my website from wix', frozenset({'rate my'})
+        ))
+
+    def test_has_word_start_phrase_rejects_celebrate_my(self):
+        # Same defensive check for 'celebrate my' / 'berate my' — any word
+        # ending in 'rate' would false-match plain substring 'rate my'.
+        self.assertFalse(_has_word_start_phrase(
+            'help me celebrate my launch', frozenset({'rate my'})
+        ))
+        self.assertFalse(_has_word_start_phrase(
+            'someone keeps trying to berate my work', frozenset({'rate my'})
+        ))
+
+    def test_rate_my_is_in_word_start_phrases_set(self):
+        # Regression guard: if someone moves 'rate my' back into _ALWAYS_EXCLUDE
+        # (plain substring matching) the original 'migrate my' bug returns.
+        self.assertIn('rate my', _ALWAYS_EXCLUDE_WORD_START_PHRASES)
 
     # --- Unknown subreddit ---
 
