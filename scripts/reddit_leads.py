@@ -350,12 +350,29 @@ def _clean_html(text: str) -> str:
 _ATOM_NS = {'atom': 'http://www.w3.org/2005/Atom'}
 
 
-def fetch_reddit_posts(subreddit: str, feed_url: str) -> list[dict] | None:
+def fetch_reddit_posts(
+    subreddit: str,
+    feed_url: str,
+    error_samples: list[str] | None = None,
+) -> list[dict] | None:
     """Fetch and parse an Atom RSS feed.
 
     Returns a list of post dicts on success (possibly empty for a feed with no
     entries), or None if the feed could not be fetched or parsed.
+
+    When *error_samples* is provided, a short descriptor of the failure cause
+    (e.g. ``"r/forhire HTTP 500"`` or ``"r/forhire URLError"``) is appended on
+    failure.  The caller uses this to surface a sample of root causes in the
+    aggregated fetch-failure Discord alert — without it, an operator seeing
+    ``"Majority of subreddit feeds failed (25/43)"`` has no signal about
+    whether the cause is a Reddit-wide outage (all HTTP 500), rate-limiting
+    (all HTTP 429), a network blip (URLError), or a mix.  The list is appended
+    to unconditionally so the caller can cap it at the call site if desired.
     """
+    def _record(sample: str) -> None:
+        if error_samples is not None:
+            error_samples.append(sample)
+
     try:
         body = http_get(feed_url)
     except urllib.error.HTTPError as e:
@@ -375,6 +392,7 @@ def fetch_reddit_posts(subreddit: str, feed_url: str) -> list[dict] | None:
                 'error': str(e),
             },
         )
+        _record(f'r/{subreddit} HTTP {e.code}')
         return None
     except Exception as e:
         print(f'Failed to fetch r/{subreddit}: {e}')
@@ -383,6 +401,7 @@ def fetch_reddit_posts(subreddit: str, feed_url: str) -> list[dict] | None:
             f'Failed to fetch r/{subreddit}',
             {'feed_url': feed_url, 'error': str(e)},
         )
+        _record(f'r/{subreddit} {type(e).__name__}')
         return None
 
     posts = []
@@ -415,6 +434,7 @@ def fetch_reddit_posts(subreddit: str, feed_url: str) -> list[dict] | None:
     except ET.ParseError as e:
         print(f'Failed to parse RSS for r/{subreddit}: {e}')
         error_log.log_error('reddit_leads', 'warning', f'Failed to parse RSS for r/{subreddit}', {'error': str(e)})
+        _record(f'r/{subreddit} ParseError')
         return None
 
     return posts
@@ -863,11 +883,19 @@ def main() -> None:
     # surfaced in the Discord alert so an operator can see the most-likely root
     # cause without opening the log file.  Capped to keep the alert readable.
     dedup_error_samples: list[str] = []
+    # Sample of fetch-failure context (subreddit + HTTP status or exception
+    # type), surfaced in the >50% / 100% fetch-failure Discord alert so the
+    # operator can distinguish at a glance between a Reddit-wide outage
+    # (all "HTTP 500"), rate-limiting (all "HTTP 429"), a network blip (all
+    # "URLError"), or a parsing regression (all "ParseError") — without it
+    # the alert only carries the failure count, which gives no signal about
+    # whether to wait it out, throttle harder, or investigate.
+    fetch_error_samples: list[str] = []
 
     for i, (subreddit, feed_url) in enumerate(REDDIT_FEEDS.items()):
         if i > 0:
             time.sleep(_INTER_FEED_DELAY)
-        posts = fetch_reddit_posts(subreddit, feed_url)
+        posts = fetch_reddit_posts(subreddit, feed_url, fetch_error_samples)
         if posts is None:
             fetch_errors += 1
             continue
@@ -955,25 +983,41 @@ def main() -> None:
                     {'url': post['url'], 'error': str(e)},
                 )
 
+    # Cap the inline sample to the first 5 entries so the Discord alert stays
+    # readable.  Five is enough to spot a single dominant failure mode (e.g.
+    # "all HTTP 500") without flooding the channel; full per-feed context
+    # remains in logs/errors.jsonl for deeper inspection.
+    fetch_sample_str = (
+        '; '.join(fetch_error_samples[:5]) if fetch_error_samples else 'none'
+    )
     if fetch_errors == len(REDDIT_FEEDS):
         _warn_discord(
-            'WARNING: reddit_leads.py failed to fetch any subreddit feeds'
-            ' — possible network issue. Check logs/errors.jsonl.'
+            f'WARNING: reddit_leads.py failed to fetch any subreddit feeds'
+            f' — possible network issue. Samples: {fetch_sample_str}.'
+            ' Check logs/errors.jsonl.'
         )
         error_log.log_error(
             'reddit_leads', 'error',
             'All subreddit feeds failed — possible network issue',
-            {'feed_count': len(REDDIT_FEEDS)},
+            {
+                'feed_count': len(REDDIT_FEEDS),
+                'samples': fetch_error_samples[:5],
+            },
         )
     elif fetch_errors > len(REDDIT_FEEDS) // 2:
         _warn_discord(
             f'WARNING: reddit_leads.py failed to fetch {fetch_errors}/{len(REDDIT_FEEDS)} subreddit feeds'
-            ' — possible partial network issue or Reddit rate-limiting. Check logs/errors.jsonl.'
+            f' — possible partial network issue or Reddit rate-limiting.'
+            f' Samples: {fetch_sample_str}. Check logs/errors.jsonl.'
         )
         error_log.log_error(
             'reddit_leads', 'warning',
             f'Majority of subreddit feeds failed ({fetch_errors}/{len(REDDIT_FEEDS)})',
-            {'fetch_errors': fetch_errors, 'feed_count': len(REDDIT_FEEDS)},
+            {
+                'fetch_errors': fetch_errors,
+                'feed_count': len(REDDIT_FEEDS),
+                'samples': fetch_error_samples[:5],
+            },
         )
 
     # Dedup-check failure alerting: dedup failures cause every affected post to

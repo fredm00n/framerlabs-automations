@@ -653,6 +653,70 @@ class TestFetchRedditPosts(unittest.TestCase):
         posts = fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss')
         self.assertEqual(posts, [])
 
+    # ------------------------------------------------------------------
+    # error_samples optional parameter — populated only on failure paths
+    # so the caller can surface a sample of root causes in the aggregated
+    # fetch-failure Discord alert.
+    # ------------------------------------------------------------------
+
+    @patch('scripts.reddit_leads.http_get')
+    def test_error_samples_not_appended_on_success(self, mock_get):
+        """A successful fetch must not append anything to error_samples."""
+        mock_get.return_value = _ATOM_FEED
+        samples: list[str] = []
+        fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss', samples)
+        self.assertEqual(samples, [])
+
+    @patch('scripts.reddit_leads.http_get')
+    def test_error_samples_appended_on_http_error(self, mock_get):
+        """HTTPError must append ``r/<sub> HTTP <code>``."""
+        mock_get.side_effect = urllib.error.HTTPError(
+            'https://www.reddit.com/r/forhire/.rss', 500, 'Server Error', {}, None,
+        )
+        samples: list[str] = []
+        result = fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss', samples)
+        self.assertIsNone(result)
+        self.assertEqual(samples, ['r/forhire HTTP 500'])
+
+    @patch('scripts.reddit_leads.http_get')
+    def test_error_samples_appended_on_http_429(self, mock_get):
+        """A 429 must show as ``HTTP 429`` so rate-limiting is visibly distinct from 500s."""
+        mock_get.side_effect = urllib.error.HTTPError(
+            'https://www.reddit.com/r/figma/.rss', 429, 'Too Many Requests', {}, None,
+        )
+        samples: list[str] = []
+        fetch_reddit_posts('figma', 'https://www.reddit.com/r/figma/.rss', samples)
+        self.assertEqual(samples, ['r/figma HTTP 429'])
+
+    @patch('scripts.reddit_leads.http_get', side_effect=urllib.error.URLError('refused'))
+    def test_error_samples_appended_on_url_error(self, mock_get):
+        """A URLError (e.g. connection refused) must append the exception class name."""
+        samples: list[str] = []
+        fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss', samples)
+        self.assertEqual(samples, ['r/forhire URLError'])
+
+    @patch('scripts.reddit_leads.http_get', side_effect=Exception('boom'))
+    def test_error_samples_appended_on_generic_exception(self, mock_get):
+        """A generic Exception must append the class name (not the message)."""
+        samples: list[str] = []
+        fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss', samples)
+        self.assertEqual(samples, ['r/forhire Exception'])
+
+    @patch('scripts.reddit_leads.http_get')
+    def test_error_samples_appended_on_parse_error(self, mock_get):
+        """A malformed feed (XML ParseError) must append ``r/<sub> ParseError``."""
+        mock_get.return_value = _MALFORMED_FEED
+        samples: list[str] = []
+        result = fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss', samples)
+        self.assertIsNone(result)
+        self.assertEqual(samples, ['r/forhire ParseError'])
+
+    @patch('scripts.reddit_leads.http_get', side_effect=Exception('network error'))
+    def test_default_no_error_samples_param_does_not_raise(self, mock_get):
+        """Backward-compat: calling without error_samples must still work and return None."""
+        result = fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss')
+        self.assertIsNone(result)
+
 
 # ---------------------------------------------------------------------------
 # TestUrlExistsInNotion
@@ -1879,6 +1943,132 @@ class TestMain(unittest.TestCase):
         msg = mock_warn.call_args[0][0]
         # All-fail message must not say "partial"
         self.assertNotIn('partial', msg.lower())
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+        'DISCORD_ALERTS_WEBHOOK_URL': 'https://discord.com/alerts',
+    })
+    @patch('scripts.reddit_leads._warn_discord')
+    @patch('scripts.reddit_leads.fetch_reddit_posts')
+    def test_partial_fail_alert_includes_samples(self, mock_fetch, mock_warn):
+        """The partial-failure Discord alert must include a ``Samples:`` section
+        so an operator can spot a dominant root cause (e.g. all ``HTTP 500``)
+        without opening logs/errors.jsonl.  Mirrors the diagnostic pattern
+        already used by the dedup-failure alert.
+        """
+        from scripts.reddit_leads import main, REDDIT_FEEDS
+        total = len(REDDIT_FEEDS)
+        majority_fail = total // 2 + 1
+
+        # Side-effect function that appends a sample to the list provided by
+        # main() and then returns None (mirroring a real fetch failure).  Using
+        # a side_effect callable instead of a fixed list lets us simulate the
+        # real interaction between main() and fetch_reddit_posts: the latter
+        # populates the caller-owned ``error_samples`` list on each failure.
+        call_count = [0]
+        def fake_fetch(subreddit, feed_url, samples=None):
+            call_count[0] += 1
+            if call_count[0] <= majority_fail:
+                if samples is not None:
+                    samples.append(f'r/{subreddit} HTTP 500')
+                return None
+            return []
+        mock_fetch.side_effect = fake_fetch
+
+        main()
+        mock_warn.assert_called_once()
+        msg = mock_warn.call_args[0][0]
+        self.assertIn('partial', msg.lower())
+        self.assertIn('Samples:', msg)
+        # First sample should be present (we cap at 5)
+        self.assertIn('HTTP 500', msg)
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+        'DISCORD_ALERTS_WEBHOOK_URL': 'https://discord.com/alerts',
+    })
+    @patch('scripts.reddit_leads._warn_discord')
+    @patch('scripts.reddit_leads.fetch_reddit_posts')
+    def test_partial_fail_alert_caps_samples_at_five(self, mock_fetch, mock_warn):
+        """The Samples section must include at most 5 entries — more would make
+        the Discord alert hard to scan and the full per-feed context is already
+        in logs/errors.jsonl for deeper inspection.
+        """
+        from scripts.reddit_leads import main, REDDIT_FEEDS
+        total = len(REDDIT_FEEDS)
+        # Fail just over half so the partial branch fires (which reports the
+        # numeric ratio).  We collect more than 5 samples so the cap matters.
+        majority_fail = total // 2 + 1
+        self.assertGreater(majority_fail, 5)  # guard the test's premise
+        call_count = [0]
+        def fake_fetch(subreddit, feed_url, samples=None):
+            call_count[0] += 1
+            if call_count[0] <= majority_fail:
+                if samples is not None:
+                    samples.append(f'r/{subreddit} HTTP 500')
+                return None
+            return []
+        mock_fetch.side_effect = fake_fetch
+        main()
+        mock_warn.assert_called_once()
+        msg = mock_warn.call_args[0][0]
+        # Count occurrences of "HTTP 500" in the alert message — should be 5
+        # (the cap), not majority_fail (which is the full failure count and
+        # would clutter the alert if not capped).
+        self.assertEqual(msg.count('HTTP 500'), 5)
+        # The full failure count is still surfaced for context in the partial
+        # branch's "X/Y subreddit feeds" prefix.
+        self.assertIn(f'{majority_fail}/{total}', msg)
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+        'DISCORD_ALERTS_WEBHOOK_URL': 'https://discord.com/alerts',
+    })
+    @patch('scripts.reddit_leads._warn_discord')
+    @patch('scripts.reddit_leads.fetch_reddit_posts')
+    def test_all_fail_alert_includes_samples(self, mock_fetch, mock_warn):
+        """The all-fail alert must also include the ``Samples:`` section so the
+        operator can see the dominant failure mode immediately."""
+        from scripts.reddit_leads import main
+        def fake_fetch(subreddit, feed_url, samples=None):
+            if samples is not None:
+                samples.append(f'r/{subreddit} HTTP 503')
+            return None
+        mock_fetch.side_effect = fake_fetch
+        main()
+        mock_warn.assert_called_once()
+        msg = mock_warn.call_args[0][0]
+        self.assertNotIn('partial', msg.lower())  # all-fail branch, not partial
+        self.assertIn('Samples:', msg)
+        self.assertIn('HTTP 503', msg)
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+        'DISCORD_ALERTS_WEBHOOK_URL': 'https://discord.com/alerts',
+    })
+    @patch('scripts.reddit_leads._warn_discord')
+    @patch('scripts.reddit_leads.fetch_reddit_posts')
+    def test_no_alert_below_threshold_does_not_reference_samples(self, mock_fetch, mock_warn):
+        """When the failure rate is at or below the 50% threshold, no alert
+        fires at all — independent of whether samples were collected."""
+        from scripts.reddit_leads import main, REDDIT_FEEDS
+        total = len(REDDIT_FEEDS)
+        half = total // 2  # exactly half — below the >50% threshold
+        call_count = [0]
+        def fake_fetch(subreddit, feed_url, samples=None):
+            call_count[0] += 1
+            if call_count[0] <= half:
+                if samples is not None:
+                    samples.append(f'r/{subreddit} HTTP 500')
+                return None
+            return []
+        mock_fetch.side_effect = fake_fetch
+        main()
+        mock_warn.assert_not_called()
 
     @patch.dict('os.environ', {
         'NOTION_TOKEN': 'ntn_test',
