@@ -432,8 +432,24 @@ def fetch_reddit_posts(
                     'subreddit': subreddit,
                 })
     except ET.ParseError as e:
+        # Capture the first 500 chars of the body so a maintainer can tell at a
+        # glance what Reddit returned when XML parsing fails.  A ``ParseError``
+        # almost always means Reddit returned HTTP 200 with a body that is not
+        # the expected Atom XML — most often the HTML "reddit broke!" error
+        # page (Reddit serves this with 200 in some shard-outage modes, not
+        # always 500), a JSON-formatted rate-limit response, or an
+        # authentication/captcha challenge HTML.  Without ``body_preview`` the
+        # log only contains the ``xml.etree`` parse-position message (e.g.
+        # ``"syntax error: line 1, column 0"``) which gives no signal about
+        # which of those failure modes is at play.  Mirrors the same
+        # ``body_preview`` capture already used in the HTTP error branch above.
+        body_preview = body[:500] if body else ''
         print(f'Failed to parse RSS for r/{subreddit}: {e}')
-        error_log.log_error('reddit_leads', 'warning', f'Failed to parse RSS for r/{subreddit}', {'error': str(e)})
+        error_log.log_error(
+            'reddit_leads', 'warning',
+            f'Failed to parse RSS for r/{subreddit}',
+            {'error': str(e), 'body_preview': body_preview},
+        )
         _record(f'r/{subreddit} ParseError')
         return None
 
