@@ -717,6 +717,65 @@ class TestFetchRedditPosts(unittest.TestCase):
         result = fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss')
         self.assertIsNone(result)
 
+    # ------------------------------------------------------------------
+    # body_preview capture on XML ParseError — without this, the log only
+    # contains the xml.etree parse-position message (e.g. "syntax error:
+    # line 1, column 0") which gives no signal whether Reddit returned an
+    # HTML "reddit broke!" page (with HTTP 200, observed in some shard-
+    # outage modes), a captcha/auth challenge page, a JSON rate-limit body,
+    # or something else entirely.  Mirrors the body_preview capture already
+    # in place for HTTP errors above the parse step.
+    # ------------------------------------------------------------------
+
+    @patch('scripts.reddit_leads.http_get')
+    def test_parse_error_logs_body_preview(self, mock_get):
+        """A ParseError must log the first 500 chars of the response body as
+        ``body_preview`` so the maintainer can see what Reddit returned."""
+        import error_log as el
+        # Simulate the "reddit broke!" HTML page Reddit serves on outage.
+        # Use unclosed/mismatched tags so xml.etree raises ParseError —
+        # well-formed HTML happens to also be well-formed XML and would
+        # parse as an empty entry list instead of triggering ParseError.
+        html_body = (
+            '<html><head><title>reddit broke!</title>'
+            '<body><p>Sorry, an error occurred.</br></body>'
+        )
+        mock_get.return_value = html_body
+        with patch.object(el, 'log_error') as mock_log:
+            result = fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss')
+        self.assertIsNone(result)
+        self.assertTrue(mock_log.called)
+        ctx = mock_log.call_args[0][3]
+        self.assertIn('body_preview', ctx)
+        self.assertIn('reddit broke!', ctx['body_preview'])
+        # Existing diagnostic field is preserved.
+        self.assertIn('error', ctx)
+        # Severity remains 'warning'.
+        self.assertEqual(mock_log.call_args[0][1], 'warning')
+
+    @patch('scripts.reddit_leads.http_get')
+    def test_parse_error_truncates_long_body_preview(self, mock_get):
+        """The captured body must be capped at 500 chars to keep
+        ``logs/errors.jsonl`` lines manageable."""
+        import error_log as el
+        # 1000-char body that does not parse as XML.
+        mock_get.return_value = 'A' * 1000
+        with patch.object(el, 'log_error') as mock_log:
+            fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss')
+        ctx = mock_log.call_args[0][3]
+        self.assertLessEqual(len(ctx['body_preview']), 500)
+
+    @patch('scripts.reddit_leads.http_get')
+    def test_parse_error_empty_body_preview_is_empty_string(self, mock_get):
+        """If the body itself is empty (rare but possible — a transient
+        proxy/CDN bug), ``body_preview`` must be ``''`` not raise."""
+        import error_log as el
+        mock_get.return_value = ''
+        with patch.object(el, 'log_error') as mock_log:
+            fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss')
+        ctx = mock_log.call_args[0][3]
+        self.assertEqual(ctx.get('body_preview', None), '')
+
 
 # ---------------------------------------------------------------------------
 # TestUrlExistsInNotion
