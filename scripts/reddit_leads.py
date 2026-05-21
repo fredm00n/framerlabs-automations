@@ -907,8 +907,22 @@ def main() -> None:
     # the alert only carries the failure count, which gives no signal about
     # whether to wait it out, throttle harder, or investigate.
     fetch_error_samples: list[str] = []
+    # Flag set the first time the dedup check returns Notion ``object_not_found``.
+    # Once true, the configured ``NOTION_REDDIT_LEADS_DB_ID`` is misconfigured
+    # (deleted, renamed, or no longer shared with the integration), so every
+    # subsequent dedup and every save in the run will fail the same way.  We
+    # stop fetching further subreddit feeds to (a) save the remaining ~60s of
+    # ``_INTER_FEED_DELAY`` pacing + retry-backoff on Reddit + Notion calls,
+    # and (b) avoid flooding ``logs/errors.jsonl`` with one warning entry per
+    # filtered post (each entry contributing nothing diagnostic beyond the
+    # first one).  The single alert at the end of the run still fires.
+    db_misconfigured = False
 
     for i, (subreddit, feed_url) in enumerate(REDDIT_FEEDS.items()):
+        if db_misconfigured:
+            # Skip the remaining RSS fetches — no Notion call can succeed until
+            # the misconfiguration is fixed, so there is nothing useful to do.
+            break
         if i > 0:
             time.sleep(_INTER_FEED_DELAY)
         posts = fetch_reddit_posts(subreddit, feed_url, fetch_error_samples)
@@ -956,8 +970,20 @@ def main() -> None:
                 # occurrence is enough to fire the alert.
                 if 'object_not_found' in notion_response:
                     dedup_object_not_found_errors += 1
+                    # First time we see this in a run: short-circuit the
+                    # remaining work.  We've already logged the warning and
+                    # captured a sample; doing N more dedup attempts (one per
+                    # filtered post for the remaining subreddits) would only
+                    # flood the log file with the same error and consume the
+                    # rest of the 15-minute cron window on doomed Notion +
+                    # Reddit RSS calls.  Set the flag so the outer loop
+                    # breaks; the existing alert path at the end of ``main()``
+                    # still fires with the single sample we collected.
+                    db_misconfigured = True
                 if len(dedup_error_samples) < 5:
                     dedup_error_samples.append(f'r/{subreddit} HTTP {e.code}')
+                if db_misconfigured:
+                    break  # exit the inner per-post loop; outer loop break is next
                 continue  # skip this post; do not attempt to save or write sentinel
             except Exception as e:
                 print(f'Error checking dedup for r/{subreddit}: {e}')
