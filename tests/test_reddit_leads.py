@@ -1840,9 +1840,30 @@ class TestMain(unittest.TestCase):
         # does not cause real waits during unit tests.
         self._sleep_patcher = patch('scripts.reddit_leads.time.sleep')
         self._sleep_patcher.start()
+        # Default: Notion preflight passes so existing dedup/main tests run
+        # unchanged.  Tests that exercise preflight-failure paths start their
+        # own patch (or stop this one) explicitly.
+        self._preflight_patcher = patch(
+            'scripts.reddit_leads._notion_preflight',
+            return_value=(True, '', None, ''),
+        )
+        self._preflight_patcher.start()
+        # Default: alert-suppression and state writes are no-ops in tests so
+        # the suite does not touch a real state file or hide alerts based on
+        # whatever state happens to be on disk.
+        self._suppress_patcher = patch(
+            'scripts.reddit_leads._should_suppress_alert',
+            return_value=False,
+        )
+        self._suppress_patcher.start()
+        self._record_patcher = patch('scripts.reddit_leads._record_alert_sent')
+        self._record_patcher.start()
 
     def tearDown(self):
         self._sleep_patcher.stop()
+        self._preflight_patcher.stop()
+        self._suppress_patcher.stop()
+        self._record_patcher.stop()
 
     @patch.dict('os.environ', {
         'NOTION_TOKEN': 'ntn_test',
@@ -2509,26 +2530,26 @@ class TestMain(unittest.TestCase):
     @patch('scripts.reddit_leads.save_lead_to_notion')
     @patch('scripts.reddit_leads._warn_discord')
     @patch('scripts.reddit_leads.fetch_reddit_posts')
-    def test_dedup_transient_404_without_object_not_found_does_not_short_circuit(
+    def test_dedup_transient_404_without_object_not_found_routes_to_general_short_circuit(
         self, mock_fetch, mock_warn, mock_save, mock_sentinel,
     ):
         """A 404 whose body does not contain ``object_not_found`` (e.g. a
-        Notion transient outage that happens to return a stripped error body,
-        or a Cloudflare-style 404 HTML page) must NOT trigger the early break.
+        Cloudflare-style 404 HTML page, or a Notion transient outage with a
+        stripped error body) must NOT fire the DB-misconfigured alert path,
+        but it MUST trip the general consecutive-failure short-circuit after
+        ``_CONSECUTIVE_DEDUP_FAILURE_SHORT_CIRCUIT`` failures.
 
-        The short-circuit is specifically scoped to the misconfiguration
-        signal — other failure modes are individually transient and the next
-        post or next subreddit may well succeed.  Without this guard, a single
-        404 from any source would silently halt the run for the rest of the
-        15-minute window.
+        This is the generalisation of PR #92: in-flight Notion degradation
+        of any kind (404, timeout, 5xx, URLError) should bail out the run
+        once we have strong evidence Notion is down (no successes between
+        N failures), not just the narrow ``object_not_found`` case.
         """
         import io
-        from scripts.reddit_leads import REDDIT_FEEDS
+        from scripts.reddit_leads import (
+            REDDIT_FEEDS, _CONSECUTIVE_DEDUP_FAILURE_SHORT_CIRCUIT,
+        )
         # 404 body that does NOT mention object_not_found.
         body = b'<html><title>Not Found</title><body>Generic 404</body></html>'
-        # Every feed yields one filtered post.  With the short-circuit
-        # incorrectly firing here, only one feed would be inspected; with it
-        # correctly disabled, all 43 feeds should be inspected.
         n = len(REDDIT_FEEDS)
         feed_iter = iter(REDDIT_FEEDS.keys())
         side = []
@@ -2551,15 +2572,20 @@ class TestMain(unittest.TestCase):
                    side_effect=fresh_http_err) as mock_exists:
             from scripts.reddit_leads import main
             main()
-        # All subreddit feeds must be fetched — no early break for non-object-
-        # not-found 404s.
-        self.assertEqual(mock_fetch.call_count, n)
-        # Every post hits dedup (all fail, but each must be attempted).
-        self.assertEqual(mock_exists.call_count, n)
-        # The other-failures threshold alert (>=5 dedup errors) must fire,
-        # but it must NOT mention object_not_found.
+        # The run must short-circuit after the threshold of consecutive
+        # failures, NOT after exhausting all 43 feeds.
+        self.assertEqual(mock_fetch.call_count,
+                         _CONSECUTIVE_DEDUP_FAILURE_SHORT_CIRCUIT)
+        self.assertEqual(mock_exists.call_count,
+                         _CONSECUTIVE_DEDUP_FAILURE_SHORT_CIRCUIT)
+        # The single alert that fires must NOT be the object_not_found path
+        # (since the body lacks the marker) — it must be the general
+        # in-flight "Notion appears unreachable" alert from the new
+        # consecutive-failure short-circuit.
         mock_warn.assert_called_once()
-        self.assertNotIn('object_not_found', mock_warn.call_args[0][0])
+        msg = mock_warn.call_args[0][0]
+        self.assertNotIn('object_not_found', msg)
+        self.assertIn('Notion appears unreachable', msg)
 
 
 # ---------------------------------------------------------------------------
@@ -2576,9 +2602,26 @@ class TestWriteSummary(unittest.TestCase):
         # Patch time.sleep so inter-feed delays don't slow down tests that call main().
         self._sleep_patcher = patch('scripts.reddit_leads.time.sleep')
         self._sleep_patcher.start()
+        # Default-pass preflight so existing summary tests can reach the
+        # per-feed loop (see TestMain.setUp for the same pattern).
+        self._preflight_patcher = patch(
+            'scripts.reddit_leads._notion_preflight',
+            return_value=(True, '', None, ''),
+        )
+        self._preflight_patcher.start()
+        self._suppress_patcher = patch(
+            'scripts.reddit_leads._should_suppress_alert',
+            return_value=False,
+        )
+        self._suppress_patcher.start()
+        self._record_patcher = patch('scripts.reddit_leads._record_alert_sent')
+        self._record_patcher.start()
 
     def tearDown(self):
         self._sleep_patcher.stop()
+        self._preflight_patcher.stop()
+        self._suppress_patcher.stop()
+        self._record_patcher.stop()
         os.environ.pop('GITHUB_STEP_SUMMARY', None)
 
     def test_writes_to_file_when_env_set(self):
@@ -2719,6 +2762,18 @@ class TestWarnDiscord(unittest.TestCase):
 class TestRateLimiting(unittest.TestCase):
     """Tests for the inter-feed delay and Reddit-specific User-Agent."""
 
+    def setUp(self):
+        # Default-pass preflight so the main() loop is exercised in the
+        # tests below (see TestMain.setUp).
+        self._preflight_patcher = patch(
+            'scripts.reddit_leads._notion_preflight',
+            return_value=(True, '', None, ''),
+        )
+        self._preflight_patcher.start()
+
+    def tearDown(self):
+        self._preflight_patcher.stop()
+
     def test_inter_feed_delay_constant_positive(self):
         """_INTER_FEED_DELAY must be a positive number."""
         self.assertGreater(rl._INTER_FEED_DELAY, 0)
@@ -2755,6 +2810,468 @@ class TestRateLimiting(unittest.TestCase):
         main()
         for call_args in mock_sleep.call_args_list:
             self.assertEqual(call_args[0][0], rl._INTER_FEED_DELAY)
+
+
+# ---------------------------------------------------------------------------
+# Notion preflight (#2 of mitigations from 2026-05-21 incident)
+# ---------------------------------------------------------------------------
+
+class TestNotionPreflight(unittest.TestCase):
+    """Direct tests for ``_notion_preflight``."""
+
+    @patch('scripts.reddit_leads.http_post', return_value={'results': []})
+    def test_preflight_ok_returns_true_tuple(self, mock_post):
+        from scripts.reddit_leads import _notion_preflight
+        ok, err, status, body = _notion_preflight('db-test')
+        self.assertTrue(ok)
+        self.assertEqual(err, '')
+        self.assertIsNone(status)
+        self.assertEqual(body, '')
+        # The probe must hit the configured DB id, not a hard-coded one.
+        called_url = mock_post.call_args[0][0]
+        self.assertIn('db-test', called_url)
+
+    def test_preflight_object_not_found_returns_marker(self):
+        import io
+        body = (
+            b'{"object":"error","status":404,"code":"object_not_found",'
+            b'"message":"Could not find database with ID: db-test."}'
+        )
+
+        def raise_404(*_a, **_kw):
+            raise urllib.error.HTTPError(
+                'https://api.notion.com/v1/databases/db-test/query',
+                404, 'Not Found', {}, io.BytesIO(body),
+            )
+        with patch('scripts.reddit_leads.http_post', side_effect=raise_404):
+            from scripts.reddit_leads import _notion_preflight
+            ok, err, status, body_preview = _notion_preflight('db-test')
+        self.assertFalse(ok)
+        self.assertEqual(err, 'object_not_found')
+        self.assertEqual(status, 404)
+        self.assertIn('object_not_found', body_preview)
+
+    def test_preflight_generic_http_error_returns_status_token(self):
+        import io
+        body = b'<html>500 Internal Server Error</html>'
+
+        def raise_500(*_a, **_kw):
+            raise urllib.error.HTTPError(
+                'https://api.notion.com/v1/databases/db-test/query',
+                500, 'Internal Server Error', {}, io.BytesIO(body),
+            )
+        with patch('scripts.reddit_leads.http_post', side_effect=raise_500):
+            from scripts.reddit_leads import _notion_preflight
+            ok, err, status, _ = _notion_preflight('db-test')
+        self.assertFalse(ok)
+        self.assertEqual(err, 'HTTP 500')
+        self.assertEqual(status, 500)
+
+    def test_preflight_timeout_returns_class_name(self):
+        with patch('scripts.reddit_leads.http_post', side_effect=TimeoutError('read timed out')):
+            from scripts.reddit_leads import _notion_preflight
+            ok, err, status, _ = _notion_preflight('db-test')
+        self.assertFalse(ok)
+        self.assertEqual(err, 'TimeoutError')
+        self.assertIsNone(status)
+
+    def test_preflight_url_error_returns_class_name(self):
+        with patch('scripts.reddit_leads.http_post',
+                   side_effect=urllib.error.URLError('connection refused')):
+            from scripts.reddit_leads import _notion_preflight
+            ok, err, status, _ = _notion_preflight('db-test')
+        self.assertFalse(ok)
+        self.assertEqual(err, 'URLError')
+
+
+class TestMainPreflightBehaviour(unittest.TestCase):
+    """Integration tests: how main() reacts to preflight outcomes."""
+
+    def setUp(self):
+        self._sleep_patcher = patch('scripts.reddit_leads.time.sleep')
+        self._sleep_patcher.start()
+        # Disable suppression so the alert always fires.
+        self._suppress_patcher = patch(
+            'scripts.reddit_leads._should_suppress_alert', return_value=False)
+        self._suppress_patcher.start()
+        self._record_patcher = patch('scripts.reddit_leads._record_alert_sent')
+        self._record_patcher.start()
+
+    def tearDown(self):
+        self._sleep_patcher.stop()
+        self._suppress_patcher.stop()
+        self._record_patcher.stop()
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+        'DISCORD_ALERTS_WEBHOOK_URL': 'https://discord.com/alerts',
+    })
+    @patch('scripts.reddit_leads._warn_discord')
+    @patch('scripts.reddit_leads.fetch_reddit_posts')
+    @patch('scripts.reddit_leads._notion_preflight',
+           return_value=(False, 'object_not_found', 404,
+                         '{"code":"object_not_found"}'))
+    def test_preflight_object_not_found_exits_without_fetching(
+        self, mock_preflight, mock_fetch, mock_warn,
+    ):
+        from scripts.reddit_leads import main
+        main()
+        # No subreddit feed must be touched when preflight fails.
+        mock_fetch.assert_not_called()
+        # Exactly one alert must fire, with the object_not_found wording.
+        mock_warn.assert_called_once()
+        msg = mock_warn.call_args[0][0]
+        self.assertIn('object_not_found', msg)
+        self.assertIn('NOTION_REDDIT_LEADS_DB_ID', msg)
+        # Dedup key must be present so subsequent runs are suppressed.
+        self.assertEqual(
+            mock_warn.call_args.kwargs.get('dedup_key'),
+            'reddit_leads:notion_preflight_object_not_found',
+        )
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+        'DISCORD_ALERTS_WEBHOOK_URL': 'https://discord.com/alerts',
+    })
+    @patch('scripts.reddit_leads._warn_discord')
+    @patch('scripts.reddit_leads.fetch_reddit_posts')
+    @patch('scripts.reddit_leads._notion_preflight',
+           return_value=(False, 'TimeoutError', None, ''))
+    def test_preflight_timeout_exits_without_fetching(
+        self, mock_preflight, mock_fetch, mock_warn,
+    ):
+        from scripts.reddit_leads import main
+        main()
+        mock_fetch.assert_not_called()
+        mock_warn.assert_called_once()
+        msg = mock_warn.call_args[0][0]
+        self.assertIn('preflight failed', msg)
+        self.assertIn('TimeoutError', msg)
+        # Generic preflight failures route to the dedicated "other" key so
+        # they don't collide with the object_not_found suppression window.
+        self.assertEqual(
+            mock_warn.call_args.kwargs.get('dedup_key'),
+            'reddit_leads:notion_preflight_other',
+        )
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+    })
+    @patch('scripts.reddit_leads.fetch_reddit_posts', return_value=[])
+    @patch('scripts.reddit_leads._notion_preflight',
+           return_value=(True, '', None, ''))
+    def test_preflight_ok_proceeds_to_feed_loop(self, mock_preflight, mock_fetch):
+        from scripts.reddit_leads import main, REDDIT_FEEDS
+        main()
+        # All 43 feeds should be inspected when preflight passes.
+        self.assertEqual(mock_fetch.call_count, len(REDDIT_FEEDS))
+
+
+# ---------------------------------------------------------------------------
+# Consecutive-dedup-failure short-circuit (#1 of mitigations)
+# ---------------------------------------------------------------------------
+
+class TestConsecutiveDedupFailureShortCircuit(unittest.TestCase):
+    """When dedup keeps failing with no successes between, bail out early."""
+
+    def setUp(self):
+        self._sleep_patcher = patch('scripts.reddit_leads.time.sleep')
+        self._sleep_patcher.start()
+        self._preflight_patcher = patch(
+            'scripts.reddit_leads._notion_preflight',
+            return_value=(True, '', None, ''),
+        )
+        self._preflight_patcher.start()
+        self._suppress_patcher = patch(
+            'scripts.reddit_leads._should_suppress_alert', return_value=False)
+        self._suppress_patcher.start()
+        self._record_patcher = patch('scripts.reddit_leads._record_alert_sent')
+        self._record_patcher.start()
+
+    def tearDown(self):
+        self._sleep_patcher.stop()
+        self._preflight_patcher.stop()
+        self._suppress_patcher.stop()
+        self._record_patcher.stop()
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+        'DISCORD_ALERTS_WEBHOOK_URL': 'https://discord.com/alerts',
+    })
+    @patch('scripts.reddit_leads.save_failed_sentinel_to_notion')
+    @patch('scripts.reddit_leads.save_lead_to_notion')
+    @patch('scripts.reddit_leads._warn_discord')
+    @patch('scripts.reddit_leads.fetch_reddit_posts')
+    def test_three_consecutive_timeouts_short_circuit(
+        self, mock_fetch, mock_warn, mock_save, mock_sentinel,
+    ):
+        from scripts.reddit_leads import (
+            REDDIT_FEEDS, _CONSECUTIVE_DEDUP_FAILURE_SHORT_CIRCUIT,
+        )
+        n = len(REDDIT_FEEDS)
+        feed_iter = iter(REDDIT_FEEDS.keys())
+        side = []
+        for _ in range(n):
+            side.append([{
+                'title': '[HIRING] Need a Framer developer',
+                'url': f'https://reddit.com/{next(feed_iter)}/abc',
+                'subreddit': 'forhire',
+                'content': 'Budget $500 for landing page website',
+                'post_date': '2024-03-01T10:00:00+00:00',
+            }])
+        mock_fetch.side_effect = side
+
+        with patch('scripts.reddit_leads.url_exists_in_notion',
+                   side_effect=TimeoutError('read timed out')) as mock_exists:
+            from scripts.reddit_leads import main
+            main()
+        # Only the threshold number of fetches and dedup calls should happen.
+        self.assertEqual(mock_fetch.call_count,
+                         _CONSECUTIVE_DEDUP_FAILURE_SHORT_CIRCUIT)
+        self.assertEqual(mock_exists.call_count,
+                         _CONSECUTIVE_DEDUP_FAILURE_SHORT_CIRCUIT)
+        # The short-circuit alert must fire (Notion appears unreachable).
+        mock_warn.assert_called_once()
+        msg = mock_warn.call_args[0][0]
+        self.assertIn('Notion appears unreachable', msg)
+        self.assertNotIn('object_not_found', msg)
+        self.assertEqual(
+            mock_warn.call_args.kwargs.get('dedup_key'),
+            'reddit_leads:dedup_notion_likely_down',
+        )
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+        'DISCORD_ALERTS_WEBHOOK_URL': 'https://discord.com/alerts',
+    })
+    @patch('scripts.reddit_leads.save_failed_sentinel_to_notion')
+    @patch('scripts.reddit_leads.save_lead_to_notion')
+    @patch('scripts.reddit_leads._warn_discord')
+    @patch('scripts.reddit_leads.fetch_reddit_posts')
+    def test_success_resets_consecutive_failure_counter(
+        self, mock_fetch, mock_warn, mock_save, mock_sentinel,
+    ):
+        """A single dedup success between failures must reset the counter
+        so a long run of intermittent (but recovering) failures does NOT
+        trip the short-circuit."""
+        from scripts.reddit_leads import REDDIT_FEEDS
+        n = len(REDDIT_FEEDS)
+        feed_iter = iter(REDDIT_FEEDS.keys())
+        side = []
+        for _ in range(n):
+            side.append([{
+                'title': '[HIRING] Need a Framer developer',
+                'url': f'https://reddit.com/{next(feed_iter)}/abc',
+                'subreddit': 'forhire',
+                'content': 'Budget $500 for landing page website',
+                'post_date': '2024-03-01T10:00:00+00:00',
+            }])
+        mock_fetch.side_effect = side
+
+        # Alternate fail, fail, success, fail, fail, success, ...
+        # Never reaches 3 consecutive failures so should NOT short-circuit.
+        outcomes = []
+        for i in range(n):
+            if (i + 1) % 3 == 0:
+                outcomes.append(False)  # success: URL doesn't exist
+            else:
+                outcomes.append(TimeoutError('read timed out'))
+
+        def side_fn(*_a, **_kw):
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        with patch('scripts.reddit_leads.url_exists_in_notion',
+                   side_effect=side_fn) as mock_exists:
+            from scripts.reddit_leads import main
+            main()
+        # All feeds should be processed — never 3 in a row without success.
+        self.assertEqual(mock_fetch.call_count, n)
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+        'DISCORD_ALERTS_WEBHOOK_URL': 'https://discord.com/alerts',
+    })
+    @patch('scripts.reddit_leads.save_failed_sentinel_to_notion')
+    @patch('scripts.reddit_leads.save_lead_to_notion')
+    @patch('scripts.reddit_leads._warn_discord')
+    @patch('scripts.reddit_leads.fetch_reddit_posts')
+    def test_consecutive_5xx_short_circuits(
+        self, mock_fetch, mock_warn, mock_save, mock_sentinel,
+    ):
+        """The same short-circuit must fire on consecutive HTTP 5xx errors,
+        not just timeouts."""
+        import io
+        from scripts.reddit_leads import (
+            REDDIT_FEEDS, _CONSECUTIVE_DEDUP_FAILURE_SHORT_CIRCUIT,
+        )
+        n = len(REDDIT_FEEDS)
+        feed_iter = iter(REDDIT_FEEDS.keys())
+        side = []
+        for _ in range(n):
+            side.append([{
+                'title': '[HIRING] Need a Framer developer',
+                'url': f'https://reddit.com/{next(feed_iter)}/abc',
+                'subreddit': 'forhire',
+                'content': 'Budget $500 for landing page website',
+                'post_date': '2024-03-01T10:00:00+00:00',
+            }])
+        mock_fetch.side_effect = side
+
+        body = b'{"object":"error","status":503,"message":"Service unavailable"}'
+
+        def raise_503(*_a, **_kw):
+            raise urllib.error.HTTPError(
+                'https://api.notion.com/v1/databases/db-test/query',
+                503, 'Service Unavailable', {}, io.BytesIO(body),
+            )
+        with patch('scripts.reddit_leads.url_exists_in_notion',
+                   side_effect=raise_503) as mock_exists:
+            from scripts.reddit_leads import main
+            main()
+        self.assertEqual(mock_fetch.call_count,
+                         _CONSECUTIVE_DEDUP_FAILURE_SHORT_CIRCUIT)
+        self.assertEqual(mock_exists.call_count,
+                         _CONSECUTIVE_DEDUP_FAILURE_SHORT_CIRCUIT)
+        mock_warn.assert_called_once()
+        self.assertIn('Notion appears unreachable', mock_warn.call_args[0][0])
+
+
+# ---------------------------------------------------------------------------
+# Alert suppression / state persistence (#3 of mitigations)
+# ---------------------------------------------------------------------------
+
+class TestAlertSuppression(unittest.TestCase):
+    """Tests for the cross-run alert dedup helpers."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.state_path = os.path.join(self._tmp.name, 'alert_state.json')
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_no_state_file_means_not_suppressed(self):
+        from scripts.reddit_leads import _should_suppress_alert
+        self.assertFalse(_should_suppress_alert('anything', state_path=self.state_path))
+
+    def test_record_then_should_suppress(self):
+        from scripts.reddit_leads import _record_alert_sent, _should_suppress_alert
+        _record_alert_sent('reddit_leads:test_key', state_path=self.state_path)
+        self.assertTrue(_should_suppress_alert(
+            'reddit_leads:test_key', state_path=self.state_path))
+
+    def test_different_keys_do_not_collide(self):
+        from scripts.reddit_leads import _record_alert_sent, _should_suppress_alert
+        _record_alert_sent('reddit_leads:a', state_path=self.state_path)
+        self.assertTrue(_should_suppress_alert('reddit_leads:a', state_path=self.state_path))
+        self.assertFalse(_should_suppress_alert('reddit_leads:b', state_path=self.state_path))
+
+    def test_outside_window_not_suppressed(self):
+        from scripts.reddit_leads import _record_alert_sent, _should_suppress_alert
+        from datetime import datetime, timedelta, timezone
+        past = datetime.now(timezone.utc) - timedelta(minutes=120)
+        _record_alert_sent('reddit_leads:test', state_path=self.state_path, now=past)
+        self.assertFalse(_should_suppress_alert(
+            'reddit_leads:test', state_path=self.state_path,
+            suppress_minutes=60,
+        ))
+
+    def test_inside_window_suppressed(self):
+        from scripts.reddit_leads import _record_alert_sent, _should_suppress_alert
+        from datetime import datetime, timedelta, timezone
+        recent = datetime.now(timezone.utc) - timedelta(minutes=10)
+        _record_alert_sent('reddit_leads:test', state_path=self.state_path, now=recent)
+        self.assertTrue(_should_suppress_alert(
+            'reddit_leads:test', state_path=self.state_path,
+            suppress_minutes=60,
+        ))
+
+    def test_corrupt_state_file_treated_as_empty(self):
+        with open(self.state_path, 'w') as f:
+            f.write('{not valid json')
+        from scripts.reddit_leads import _should_suppress_alert
+        self.assertFalse(_should_suppress_alert(
+            'anything', state_path=self.state_path))
+
+    def test_malformed_timestamp_treated_as_not_recorded(self):
+        with open(self.state_path, 'w') as f:
+            f.write('{"reddit_leads:test": "not-a-timestamp"}')
+        from scripts.reddit_leads import _should_suppress_alert
+        self.assertFalse(_should_suppress_alert(
+            'reddit_leads:test', state_path=self.state_path))
+
+    def test_state_path_constant_is_per_script(self):
+        """State path must be reddit-specific to avoid cross-script push races."""
+        from scripts.reddit_leads import _ALERT_STATE_PATH
+        self.assertIn('reddit_leads', _ALERT_STATE_PATH)
+        self.assertTrue(_ALERT_STATE_PATH.startswith('state/'))
+
+
+class TestWarnDiscordSuppression(unittest.TestCase):
+    """_warn_discord must honour the dedup_key suppression contract."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.state_path = os.path.join(self._tmp.name, 'alert_state.json')
+        self._state_patcher = patch(
+            'scripts.reddit_leads._ALERT_STATE_PATH', self.state_path)
+        self._state_patcher.start()
+        os.environ['DISCORD_ALERTS_WEBHOOK_URL'] = 'https://discord.com/api/webhooks/test'
+
+    def tearDown(self):
+        self._state_patcher.stop()
+        os.environ.pop('DISCORD_ALERTS_WEBHOOK_URL', None)
+        self._tmp.cleanup()
+
+    @patch('scripts.reddit_leads.http_post')
+    def test_first_call_with_dedup_key_sends_and_records(self, mock_post):
+        from scripts.reddit_leads import _warn_discord, _should_suppress_alert
+        _warn_discord('hello', dedup_key='reddit_leads:k')
+        mock_post.assert_called_once()
+        # The next call would be suppressed.
+        self.assertTrue(_should_suppress_alert(
+            'reddit_leads:k', state_path=self.state_path))
+
+    @patch('scripts.reddit_leads.http_post')
+    def test_second_call_within_window_is_suppressed(self, mock_post):
+        from scripts.reddit_leads import _warn_discord
+        _warn_discord('first', dedup_key='reddit_leads:k')
+        _warn_discord('second', dedup_key='reddit_leads:k')
+        # Only the first call should have hit Discord.
+        self.assertEqual(mock_post.call_count, 1)
+
+    @patch('scripts.reddit_leads.http_post')
+    def test_no_dedup_key_never_suppresses(self, mock_post):
+        from scripts.reddit_leads import _warn_discord
+        _warn_discord('first')
+        _warn_discord('second')
+        self.assertEqual(mock_post.call_count, 2)
+
+    @patch('scripts.reddit_leads.http_post')
+    def test_failed_send_does_not_record(self, mock_post):
+        """A transient Discord 5xx must not record a 'sent' timestamp;
+        otherwise the next alert would be silently suppressed even though
+        the first never reached the channel."""
+        import io
+        mock_post.side_effect = urllib.error.HTTPError(
+            'https://discord.com/api/webhooks/test', 503, 'Service Unavailable',
+            {}, io.BytesIO(b''),
+        )
+        from scripts.reddit_leads import _warn_discord, _should_suppress_alert
+        _warn_discord('boom', dedup_key='reddit_leads:k')
+        self.assertFalse(_should_suppress_alert(
+            'reddit_leads:k', state_path=self.state_path))
 
 
 if __name__ == '__main__':

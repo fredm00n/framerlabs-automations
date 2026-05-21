@@ -26,5 +26,29 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add logs/errors.jsonl
-          git diff --cached --quiet || (git commit -m "chore: update error log [skip ci]" && git pull --rebase origin main && git push)
+          # The alert-state file is committed alongside the error log so the
+          # cross-run Discord alert suppression survives between cron ticks.
+          # It is script-specific (no cross-script writes) so it does not
+          # race with framer-monitor's own commits.
+          mkdir -p logs state
+          touch logs/errors.jsonl state/alert_state-reddit_leads.json
+          git add logs/errors.jsonl state/alert_state-reddit_leads.json
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "chore: update error log [skip ci]"
+          # Push with exponential backoff (2s, 4s, 8s, 16s, 32s).  Both this
+          # workflow and framer-monitor push to main and can race; without
+          # retry a lost race silently drops the log entries from the losing
+          # run, which is how the 2026-05-21 incident evidence disappeared
+          # from logs/errors.jsonl entirely.
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin main && git push; then
+              exit 0
+            fi
+            echo "push attempt $attempt failed, retrying..." >&2
+            sleep $((2 ** attempt))
+          done
+          echo "git push failed after 5 attempts" >&2
+          exit 1

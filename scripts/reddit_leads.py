@@ -820,8 +820,108 @@ def notify_discord_lead(lead: dict) -> bool:
         return False
 
 
-def _warn_discord(message: str) -> None:
-    """Send a system-level warning to the dedicated alerts webhook."""
+# ---------------------------------------------------------------------------
+# Alert suppression (cross-run de-duplication)
+# ---------------------------------------------------------------------------
+#
+# A sustained outage produces one identical Discord alert per 15-min cron
+# tick.  Today's incident fired the same dedup-failure alert 4× in ~30 min
+# — none of the repeats carried new diagnostic information.  We persist the
+# last-sent timestamp of each alert key to a small JSON file that the
+# workflow commits alongside ``logs/errors.jsonl``; subsequent runs skip
+# the alert if it was sent inside the suppression window.
+#
+# Per-script state file path (no cross-script writes → no push races).
+_ALERT_STATE_PATH = 'state/alert_state-reddit_leads.json'
+# Minutes to suppress an identical alert key after a successful send.  Picked
+# so a 4-tick / 60-min outage produces exactly one alert; further alerts
+# only fire when the issue persists beyond the window, which is itself a
+# useful signal that "we are still seeing this".
+_ALERT_SUPPRESS_MINUTES = 60
+
+
+def _load_alert_state(path: str | None = None) -> dict:
+    """Load the persisted alert-state map; return {} on any error.
+
+    Never raises — a missing/corrupt state file simply means "no recent
+    alert known", which is safe (the worst case is one extra Discord
+    notification, not a missed alert).
+
+    ``path`` is looked up from the module-level constant when omitted so
+    test patches of ``_ALERT_STATE_PATH`` take effect (Python evaluates
+    default argument expressions once at definition time, which would
+    otherwise bake the original path into every helper).
+    """
+    if path is None:
+        path = _ALERT_STATE_PATH
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_alert_state(state: dict, path: str | None = None) -> None:
+    """Persist *state* to disk, creating parent directories if needed."""
+    if path is None:
+        path = _ALERT_STATE_PATH
+    try:
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump(state, f, indent=2, sort_keys=True)
+    except OSError as e:
+        # Failing to persist the suppression record only means the next
+        # run won't suppress this alert key — non-fatal.
+        print(f'[alert_state] failed to save: {e}', file=sys.stderr)
+
+
+def _should_suppress_alert(
+    key: str,
+    suppress_minutes: int = _ALERT_SUPPRESS_MINUTES,
+    state_path: str | None = None,
+    now: datetime | None = None,
+) -> bool:
+    """Return True if an alert with *key* was sent within the suppress window."""
+    state = _load_alert_state(state_path)
+    last_sent_str = state.get(key)
+    if not last_sent_str:
+        return False
+    try:
+        last_sent = datetime.fromisoformat(last_sent_str)
+    except (ValueError, TypeError):
+        return False
+    if last_sent.tzinfo is None:
+        last_sent = last_sent.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    elapsed = (current - last_sent).total_seconds()
+    return elapsed < suppress_minutes * 60
+
+
+def _record_alert_sent(
+    key: str,
+    state_path: str | None = None,
+    now: datetime | None = None,
+) -> None:
+    state = _load_alert_state(state_path)
+    state[key] = (now or datetime.now(timezone.utc)).isoformat()
+    _save_alert_state(state, state_path)
+
+
+def _warn_discord(message: str, dedup_key: str | None = None,
+                  suppress_minutes: int = _ALERT_SUPPRESS_MINUTES) -> None:
+    """Send a system-level warning to the dedicated alerts webhook.
+
+    If *dedup_key* is provided and the same key was sent successfully
+    within the last *suppress_minutes* (per the persisted state file),
+    the alert is silently skipped.  The send timestamp is only recorded
+    after a successful POST, so a transient Discord 5xx does not suppress
+    the next attempt when the webhook recovers.
+    """
+    if dedup_key and _should_suppress_alert(dedup_key, suppress_minutes):
+        print(f'[alert] Suppressing duplicate alert (key={dedup_key})')
+        return
     webhook_url = os.environ.get('DISCORD_ALERTS_WEBHOOK_URL')
     if not webhook_url:
         print('DISCORD_ALERTS_WEBHOOK_URL not set — skipping alert.')
@@ -845,9 +945,13 @@ def _warn_discord(message: str) -> None:
             'Failed to send Discord alert',
             {'status': e.code, 'error': str(e), 'discord_response': discord_response},
         )
+        return
     except Exception as e:
         print(f'Failed to send Discord alert: {e}')
         error_log.log_error('reddit_leads', 'warning', 'Failed to send Discord alert', {'error': str(e)})
+        return
+    if dedup_key:
+        _record_alert_sent(dedup_key)
 
 
 def _write_summary(text: str) -> None:
@@ -881,6 +985,58 @@ def _write_summary(text: str) -> None:
 _DEDUP_OBJECT_NOT_FOUND_ALERT_THRESHOLD = 1
 _DEDUP_OTHER_FAILURE_ALERT_THRESHOLD = 5
 
+# After this many *consecutive* dedup failures with zero successes between
+# them, treat Notion as broadly unhealthy and short-circuit the rest of the
+# run.  PR #92 only short-circuited on Notion's ``object_not_found`` code,
+# which left the run grinding through 43 doomed dedup calls when Notion was
+# down for any other reason (timeouts, generic 5xx, connection errors).  At
+# ~30s timeout × 4 retries per failed call, a 43-post run could exceed the
+# 15-min cron tick.  Three failures with no successes between them is a
+# strong signal that Notion is down for this run — bail out and let the
+# next cron tick try again.  Reset to 0 on any successful dedup or save.
+_CONSECUTIVE_DEDUP_FAILURE_SHORT_CIRCUIT = 3
+
+
+def _notion_preflight(db_id: str) -> tuple[bool, str, int | None, str]:
+    """Probe Notion with one cheap query before entering the main feed loop.
+
+    Returns ``(ok, error_type, http_status, body_preview)``:
+      * On success: ``(True, '', None, '')``.
+      * On ``object_not_found`` 404: ``('object_not_found', 404, body)``
+        so the caller can fire the same DB-misconfigured alert it would
+        for an in-flight ``object_not_found``.
+      * On any other ``HTTPError``: ``(False, f'HTTP <code>', code, body)``.
+      * On any other exception: ``(False, type(exc).__name__, None, '')``.
+
+    The probe uses a synthetic URL that will never match a real lead so
+    the query is always a single-page Notion call that returns
+    ``results: []`` — minimal cost on the happy path.  Performed via a
+    dedicated function (not ``url_exists_in_notion``) so test patches
+    targeting ``url_exists_in_notion`` for in-flight dedup behaviour are
+    not also exercised by the preflight — keeps the test surface small.
+    """
+    try:
+        http_post(
+            f'https://api.notion.com/v1/databases/{db_id}/query',
+            {
+                'filter': {'property': 'URL', 'url': {'equals': '__preflight__never_matches__'}},
+                'page_size': 1,
+            },
+            headers=notion_headers(),
+        )
+        return True, '', None, ''
+    except urllib.error.HTTPError as e:
+        body = ''
+        try:
+            body = e.read().decode('utf-8', errors='replace')[:500]
+        except Exception:
+            pass
+        if 'object_not_found' in body:
+            return False, 'object_not_found', e.code, body
+        return False, f'HTTP {e.code}', e.code, body
+    except Exception as e:
+        return False, type(e).__name__, None, ''
+
 
 def main() -> None:
     load_dotenv()
@@ -891,6 +1047,47 @@ def main() -> None:
         raise SystemExit(1)
 
     db_id = os.environ['NOTION_REDDIT_LEADS_DB_ID']
+
+    # Notion preflight: one cheap query against the configured DB before we
+    # enter the per-feed loop.  When Notion is broadly unreachable, today's
+    # behaviour was a 43-call cascade where each failed dedup burned ~120s
+    # of retried timeouts — exceeding the 15-min cron window.  A single
+    # probe up front catches the "Notion is down for this run" case in
+    # seconds, lets us fire one alert (suppressed across subsequent ticks
+    # by ``dedup_key``), and exits before any Reddit traffic.
+    preflight_ok, preflight_err, preflight_status, preflight_body = _notion_preflight(db_id)
+    if not preflight_ok:
+        error_log.log_error(
+            'reddit_leads', 'error',
+            'Notion preflight failed — skipping run',
+            {
+                'error_type': preflight_err,
+                'status': preflight_status,
+                'notion_response': preflight_body,
+            },
+        )
+        if preflight_err == 'object_not_found':
+            _warn_discord(
+                'ERROR: reddit_leads.py — Notion preflight returned object_not_found.'
+                ' DB likely deleted, renamed, or no longer shared with the integration.'
+                ' Skipping this run. Check NOTION_REDDIT_LEADS_DB_ID secret and'
+                ' logs/errors.jsonl.',
+                dedup_key='reddit_leads:notion_preflight_object_not_found',
+            )
+        else:
+            _warn_discord(
+                f'WARNING: reddit_leads.py — Notion preflight failed ({preflight_err}).'
+                ' Notion appears unreachable; skipping this run to avoid a 43-call'
+                ' failure cascade. Check logs/errors.jsonl.',
+                dedup_key='reddit_leads:notion_preflight_other',
+            )
+        print(f'Notion preflight failed: {preflight_err} — exiting early.')
+        _write_summary(
+            '## Reddit Leads Monitor\n'
+            f'⚠️ Notion preflight failed ({preflight_err}) — skipped this run.'
+        )
+        return
+
     total_saved = 0
     fetch_errors = 0
     dedup_errors = 0
@@ -917,11 +1114,21 @@ def main() -> None:
     # filtered post (each entry contributing nothing diagnostic beyond the
     # first one).  The single alert at the end of the run still fires.
     db_misconfigured = False
+    # Counter for *consecutive* dedup failures with no successes between them.
+    # Resets to 0 on any successful dedup or save.  When it reaches
+    # ``_CONSECUTIVE_DEDUP_FAILURE_SHORT_CIRCUIT`` we treat Notion as
+    # in-flight unhealthy and short-circuit the rest of the run, even when
+    # the failure mode is not ``object_not_found``.  This generalises the
+    # PR #92 fix to cover today's incident classes (TimeoutError, URLError,
+    # generic 5xx) that were deliberately left out of #92's narrow scope.
+    consecutive_dedup_failures = 0
+    notion_likely_down = False
 
     for i, (subreddit, feed_url) in enumerate(REDDIT_FEEDS.items()):
-        if db_misconfigured:
-            # Skip the remaining RSS fetches — no Notion call can succeed until
-            # the misconfiguration is fixed, so there is nothing useful to do.
+        if db_misconfigured or notion_likely_down:
+            # Skip the remaining RSS fetches — Notion is in a state where no
+            # further work in this run can succeed.  The end-of-main alert
+            # path still fires below.
             break
         if i > 0:
             time.sleep(_INTER_FEED_DELAY)
@@ -938,7 +1145,13 @@ def main() -> None:
             # that permanently blacklists the URL before any save was even
             # attempted.
             try:
-                if url_exists_in_notion(post['url'], db_id):
+                exists = url_exists_in_notion(post['url'], db_id)
+                # Any successful dedup query resets the consecutive-failure
+                # counter — Notion is clearly reachable for at least some
+                # calls in this run, so the broad short-circuit should not
+                # fire on the next isolated failure.
+                consecutive_dedup_failures = 0
+                if exists:
                     continue
             except urllib.error.HTTPError as e:
                 # Capture the Notion API response body to help diagnose recurring
@@ -963,6 +1176,7 @@ def main() -> None:
                     },
                 )
                 dedup_errors += 1
+                consecutive_dedup_failures += 1
                 # Treat ``object_not_found`` specially: it means the configured
                 # NOTION_REDDIT_LEADS_DB_ID is invalid / not shared with the
                 # integration, so every dedup check for the rest of the run
@@ -980,9 +1194,16 @@ def main() -> None:
                     # breaks; the existing alert path at the end of ``main()``
                     # still fires with the single sample we collected.
                     db_misconfigured = True
+                elif consecutive_dedup_failures >= _CONSECUTIVE_DEDUP_FAILURE_SHORT_CIRCUIT:
+                    # Sustained dedup failures with no successes between
+                    # them: Notion is in-flight unhealthy (timeouts, 5xx,
+                    # connection errors).  Generalises the PR #92 narrow
+                    # ``object_not_found`` short-circuit so the run does
+                    # not grind through 40+ doomed dedup calls.
+                    notion_likely_down = True
                 if len(dedup_error_samples) < 5:
                     dedup_error_samples.append(f'r/{subreddit} HTTP {e.code}')
-                if db_misconfigured:
+                if db_misconfigured or notion_likely_down:
                     break  # exit the inner per-post loop; outer loop break is next
                 continue  # skip this post; do not attempt to save or write sentinel
             except Exception as e:
@@ -993,11 +1214,19 @@ def main() -> None:
                     {'url': post['url'], 'error': str(e)},
                 )
                 dedup_errors += 1
+                consecutive_dedup_failures += 1
                 if len(dedup_error_samples) < 5:
                     dedup_error_samples.append(f'r/{subreddit} {type(e).__name__}')
+                if consecutive_dedup_failures >= _CONSECUTIVE_DEDUP_FAILURE_SHORT_CIRCUIT:
+                    notion_likely_down = True
+                    break  # exit the inner per-post loop; outer loop break is next
                 continue  # skip this post; do not attempt to save or write sentinel
             try:
                 save_lead_to_notion(post, db_id)
+                # A successful save also proves Notion is reachable — reset
+                # the consecutive-failure counter so an in-flight degradation
+                # short-circuit only fires on a sustained run of failures.
+                consecutive_dedup_failures = 0
                 total_saved += 1
                 print(f'Saved: [r/{subreddit}] {post["title"]}')
             except urllib.error.HTTPError as e:
@@ -1036,7 +1265,8 @@ def main() -> None:
         _warn_discord(
             f'WARNING: reddit_leads.py failed to fetch any subreddit feeds'
             f' — possible network issue. Samples: {fetch_sample_str}.'
-            ' Check logs/errors.jsonl.'
+            ' Check logs/errors.jsonl.',
+            dedup_key='reddit_leads:fetch_all_failed',
         )
         error_log.log_error(
             'reddit_leads', 'error',
@@ -1050,7 +1280,8 @@ def main() -> None:
         _warn_discord(
             f'WARNING: reddit_leads.py failed to fetch {fetch_errors}/{len(REDDIT_FEEDS)} subreddit feeds'
             f' — possible partial network issue or Reddit rate-limiting.'
-            f' Samples: {fetch_sample_str}. Check logs/errors.jsonl.'
+            f' Samples: {fetch_sample_str}. Check logs/errors.jsonl.',
+            dedup_key='reddit_leads:fetch_majority_failed',
         )
         error_log.log_error(
             'reddit_leads', 'warning',
@@ -1075,7 +1306,8 @@ def main() -> None:
             f' (DB likely deleted, renamed, or no longer shared with the integration).'
             f' {dedup_errors} dedup failure(s) this run. Samples: {sample_str}.'
             ' All affected posts skipped. Check logs/errors.jsonl and the'
-            ' NOTION_REDDIT_LEADS_DB_ID secret.'
+            ' NOTION_REDDIT_LEADS_DB_ID secret.',
+            dedup_key='reddit_leads:dedup_object_not_found',
         )
         error_log.log_error(
             'reddit_leads', 'error',
@@ -1086,12 +1318,35 @@ def main() -> None:
                 'samples': dedup_error_samples,
             },
         )
+    elif notion_likely_down:
+        # Hit the consecutive-failure short-circuit.  Distinct alert from
+        # the ``object_not_found`` case because the operator action is
+        # different: this signals an in-flight Notion outage (timeouts,
+        # 5xx, connection errors) rather than a DB misconfiguration.
+        sample_str = '; '.join(dedup_error_samples) if dedup_error_samples else 'none'
+        _warn_discord(
+            f'WARNING: reddit_leads.py — {consecutive_dedup_failures} consecutive'
+            f' dedup-check failures; Notion appears unreachable. Short-circuited'
+            f' the run after {dedup_errors} total failure(s). Samples: {sample_str}.'
+            ' Check logs/errors.jsonl.',
+            dedup_key='reddit_leads:dedup_notion_likely_down',
+        )
+        error_log.log_error(
+            'reddit_leads', 'warning',
+            f'Notion appears unreachable — short-circuited after {consecutive_dedup_failures} consecutive dedup failures',
+            {
+                'dedup_errors': dedup_errors,
+                'consecutive_dedup_failures': consecutive_dedup_failures,
+                'samples': dedup_error_samples,
+            },
+        )
     elif dedup_errors >= _DEDUP_OTHER_FAILURE_ALERT_THRESHOLD:
         sample_str = '; '.join(dedup_error_samples) if dedup_error_samples else 'none'
         _warn_discord(
             f'WARNING: reddit_leads.py — {dedup_errors} dedup-check failure(s) this run.'
             f' Samples: {sample_str}. Affected posts skipped (no sentinel written).'
-            ' Check logs/errors.jsonl.'
+            ' Check logs/errors.jsonl.',
+            dedup_key='reddit_leads:dedup_other_failures',
         )
         error_log.log_error(
             'reddit_leads', 'warning',
