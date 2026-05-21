@@ -2437,6 +2437,130 @@ class TestMain(unittest.TestCase):
         main()
         mock_warn.assert_not_called()
 
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+        'DISCORD_ALERTS_WEBHOOK_URL': 'https://discord.com/alerts',
+    })
+    @patch('scripts.reddit_leads.save_failed_sentinel_to_notion')
+    @patch('scripts.reddit_leads.save_lead_to_notion')
+    @patch('scripts.reddit_leads._warn_discord')
+    @patch('scripts.reddit_leads.fetch_reddit_posts')
+    def test_dedup_object_not_found_short_circuits_remaining_feeds(
+        self, mock_fetch, mock_warn, mock_save, mock_sentinel,
+    ):
+        """After the first ``object_not_found`` dedup failure, the outer loop
+        must break: every subsequent dedup attempt would fail with the same
+        404 and consume the rest of the 15-minute cron window on doomed Notion
+        + Reddit RSS calls.  This test confirms that:
+          1. only the first subreddit's RSS feed is fetched,
+          2. ``url_exists_in_notion`` is called exactly once, and
+          3. the single Discord alert at the end of the run still fires.
+        """
+        import io
+        from scripts.reddit_leads import REDDIT_FEEDS
+        body = (
+            b'{"object":"error","status":404,"code":"object_not_found",'
+            b'"message":"Could not find database with ID: db-test."}'
+        )
+        # Every feed returns the same single hiring post — but only the first
+        # one should ever be inspected because the dedup failure on its post
+        # triggers the early break.
+        filtered_post = [{
+            'title': '[HIRING] Need a Framer developer',
+            'url': 'https://reddit.com/r/forhire/abc',
+            'subreddit': list(REDDIT_FEEDS.keys())[0],
+            'content': 'Budget $500 for landing page website',
+            'post_date': '2024-03-01T10:00:00+00:00',
+        }]
+        mock_fetch.return_value = filtered_post
+
+        def fresh_http_err(*_a, **_kw):
+            raise urllib.error.HTTPError(
+                'https://api.notion.com/v1/databases/db-test/query',
+                404, 'Not Found', {}, io.BytesIO(body),
+            )
+        with patch('scripts.reddit_leads.url_exists_in_notion',
+                   side_effect=fresh_http_err) as mock_exists:
+            from scripts.reddit_leads import main
+            main()
+        # Only one subreddit feed should have been fetched — the outer loop
+        # must break after the first object_not_found, not iterate through
+        # all 43 feeds.
+        self.assertEqual(mock_fetch.call_count, 1)
+        # Exactly one dedup attempt (against the first post) must have been
+        # made — any further calls would be wasted Notion traffic.
+        self.assertEqual(mock_exists.call_count, 1)
+        # Save path must never be reached.
+        mock_save.assert_not_called()
+        mock_sentinel.assert_not_called()
+        # The single ERROR-level alert must still fire.
+        mock_warn.assert_called_once()
+        msg = mock_warn.call_args[0][0]
+        self.assertIn('object_not_found', msg)
+        self.assertIn('NOTION_REDDIT_LEADS_DB_ID', msg)
+
+    @patch.dict('os.environ', {
+        'NOTION_TOKEN': 'ntn_test',
+        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
+        'DISCORD_ALERTS_WEBHOOK_URL': 'https://discord.com/alerts',
+    })
+    @patch('scripts.reddit_leads.save_failed_sentinel_to_notion')
+    @patch('scripts.reddit_leads.save_lead_to_notion')
+    @patch('scripts.reddit_leads._warn_discord')
+    @patch('scripts.reddit_leads.fetch_reddit_posts')
+    def test_dedup_transient_404_without_object_not_found_does_not_short_circuit(
+        self, mock_fetch, mock_warn, mock_save, mock_sentinel,
+    ):
+        """A 404 whose body does not contain ``object_not_found`` (e.g. a
+        Notion transient outage that happens to return a stripped error body,
+        or a Cloudflare-style 404 HTML page) must NOT trigger the early break.
+
+        The short-circuit is specifically scoped to the misconfiguration
+        signal — other failure modes are individually transient and the next
+        post or next subreddit may well succeed.  Without this guard, a single
+        404 from any source would silently halt the run for the rest of the
+        15-minute window.
+        """
+        import io
+        from scripts.reddit_leads import REDDIT_FEEDS
+        # 404 body that does NOT mention object_not_found.
+        body = b'<html><title>Not Found</title><body>Generic 404</body></html>'
+        # Every feed yields one filtered post.  With the short-circuit
+        # incorrectly firing here, only one feed would be inspected; with it
+        # correctly disabled, all 43 feeds should be inspected.
+        n = len(REDDIT_FEEDS)
+        feed_iter = iter(REDDIT_FEEDS.keys())
+        side = []
+        for _ in range(n):
+            side.append([{
+                'title': '[HIRING] Need a Framer developer',
+                'url': f'https://reddit.com/{next(feed_iter)}/abc',
+                'subreddit': 'forhire',
+                'content': 'Budget $500 for landing page website',
+                'post_date': '2024-03-01T10:00:00+00:00',
+            }])
+        mock_fetch.side_effect = side
+
+        def fresh_http_err(*_a, **_kw):
+            raise urllib.error.HTTPError(
+                'https://api.notion.com/v1/databases/db-test/query',
+                404, 'Not Found', {}, io.BytesIO(body),
+            )
+        with patch('scripts.reddit_leads.url_exists_in_notion',
+                   side_effect=fresh_http_err) as mock_exists:
+            from scripts.reddit_leads import main
+            main()
+        # All subreddit feeds must be fetched — no early break for non-object-
+        # not-found 404s.
+        self.assertEqual(mock_fetch.call_count, n)
+        # Every post hits dedup (all fail, but each must be attempted).
+        self.assertEqual(mock_exists.call_count, n)
+        # The other-failures threshold alert (>=5 dedup errors) must fire,
+        # but it must NOT mention object_not_found.
+        mock_warn.assert_called_once()
+        self.assertNotIn('object_not_found', mock_warn.call_args[0][0])
+
 
 # ---------------------------------------------------------------------------
 # _write_summary
