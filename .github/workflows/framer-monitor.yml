@@ -30,5 +30,24 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          mkdir -p logs
+          touch logs/errors.jsonl
           git add logs/errors.jsonl
-          git diff --cached --quiet || (git commit -m "chore: update error log [skip ci]" && git pull --rebase origin main && git push)
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "chore: update error log [skip ci]"
+          # Push with exponential backoff (2s, 4s, 8s, 16s, 32s).  Both this
+          # workflow and reddit-leads-monitor push to main and can race;
+          # without retry a lost race silently drops the log entries from
+          # the losing run.
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin main && git push; then
+              exit 0
+            fi
+            echo "push attempt $attempt failed, retrying..." >&2
+            sleep $((2 ** attempt))
+          done
+          echo "git push failed after 5 attempts" >&2
+          exit 1
