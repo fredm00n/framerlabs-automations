@@ -9,6 +9,7 @@ import hmac
 import json
 import os
 import re
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -941,8 +942,98 @@ def notify_discord(template: dict) -> None:
     notify_discord_batch([template])
 
 
-def _warn_discord(message: str) -> None:
-    """Send a system-level warning to the dedicated alerts webhook."""
+# ---------------------------------------------------------------------------
+# Alert suppression (cross-run de-duplication)
+# ---------------------------------------------------------------------------
+#
+# Without this, a sustained Framer-side or Notion-side outage produces one
+# identical Discord alert per 15-min cron tick.  We persist the last-sent
+# timestamp of each alert ``dedup_key`` to a small JSON file the workflow
+# commits alongside ``logs/errors.jsonl``; subsequent runs skip the alert
+# if it was sent inside the suppression window.  Mirrors the same pattern
+# added to ``reddit_leads.py``; uses a per-script state path so concurrent
+# workflows don't race on a single file when they push.
+_ALERT_STATE_PATH = 'state/alert_state-framer_templates.json'
+_ALERT_SUPPRESS_MINUTES = 60
+
+
+def _load_alert_state(path: str | None = None) -> dict:
+    """Load the persisted alert-state map; return {} on any error.
+
+    Never raises — a missing/corrupt state file simply means "no recent
+    alert known", which is safe (the worst case is one extra Discord
+    notification, not a missed alert).
+    """
+    if path is None:
+        path = _ALERT_STATE_PATH
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_alert_state(state: dict, path: str | None = None) -> None:
+    """Persist *state* to disk, creating parent directories if needed."""
+    if path is None:
+        path = _ALERT_STATE_PATH
+    try:
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump(state, f, indent=2, sort_keys=True)
+    except OSError as e:
+        # Failing to persist the suppression record only means the next
+        # run won't suppress this alert key — non-fatal.
+        print(f'[alert_state] failed to save: {e}', file=sys.stderr)
+
+
+def _should_suppress_alert(
+    key: str,
+    suppress_minutes: int = _ALERT_SUPPRESS_MINUTES,
+    state_path: str | None = None,
+    now: datetime | None = None,
+) -> bool:
+    """Return True if an alert with *key* was sent within the suppress window."""
+    state = _load_alert_state(state_path)
+    last_sent_str = state.get(key)
+    if not last_sent_str:
+        return False
+    try:
+        last_sent = datetime.fromisoformat(last_sent_str)
+    except (ValueError, TypeError):
+        return False
+    if last_sent.tzinfo is None:
+        last_sent = last_sent.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    elapsed = (current - last_sent).total_seconds()
+    return elapsed < suppress_minutes * 60
+
+
+def _record_alert_sent(
+    key: str,
+    state_path: str | None = None,
+    now: datetime | None = None,
+) -> None:
+    state = _load_alert_state(state_path)
+    state[key] = (now or datetime.now(timezone.utc)).isoformat()
+    _save_alert_state(state, state_path)
+
+
+def _warn_discord(message: str, dedup_key: str | None = None,
+                  suppress_minutes: int = _ALERT_SUPPRESS_MINUTES) -> None:
+    """Send a system-level warning to the dedicated alerts webhook.
+
+    If *dedup_key* is provided and the same key was sent successfully
+    within the last *suppress_minutes* (per the persisted state file),
+    the alert is silently skipped.  The send timestamp is only recorded
+    after a successful POST, so a transient Discord 5xx does not suppress
+    the next attempt when the webhook recovers.
+    """
+    if dedup_key and _should_suppress_alert(dedup_key, suppress_minutes):
+        print(f'[alert] Suppressing duplicate alert (key={dedup_key})')
+        return
     webhook_url = os.environ.get('DISCORD_ALERTS_WEBHOOK_URL')
     if not webhook_url:
         print('DISCORD_ALERTS_WEBHOOK_URL not set — skipping alert.')
@@ -965,9 +1056,13 @@ def _warn_discord(message: str) -> None:
             'Failed to send Discord alert',
             {'status': e.code, 'error': str(e), 'discord_response': discord_response},
         )
+        return
     except Exception as e:
         print(f'Failed to send Discord alert: {e}')
         error_log.log_error('framer_templates', 'warning', 'Failed to send Discord alert', {'error': str(e)})
+        return
+    if dedup_key:
+        _record_alert_sent(dedup_key)
 
 
 # ---------------------------------------------------------------------------
@@ -1146,13 +1241,15 @@ def main() -> None:
         )
         _warn_discord(
             f'ERROR: framer_templates.py failed to fetch templates from Framer RSC: {e}'
-            ' — Check GitHub Actions logs.'
+            ' — Check GitHub Actions logs.',
+            dedup_key='framer_templates:fetch_failed',
         )
         raise SystemExit(1)
     if len(templates) < 5:
         _warn_discord(
             f'WARNING: only {len(templates)} template(s) parsed from Framer RSC'
-            ' — format may have changed. Check GitHub Actions logs.'
+            ' — format may have changed. Check GitHub Actions logs.',
+            dedup_key='framer_templates:few_templates_parsed',
         )
     # Wrap the seen-slugs fetch so a Notion misconfiguration (deleted DB,
     # revoked integration token, wrong NOTION_DATABASE_ID secret) surfaces
@@ -1179,7 +1276,8 @@ def main() -> None:
             f'ERROR: framer_templates.py — get_seen_slugs returned HTTP {e.code}'
             f' (DB likely deleted, renamed, or no longer shared with the integration,'
             f' or NOTION_TOKEN expired/revoked). No new templates will be saved'
-            f' until fixed. Check NOTION_DATABASE_ID and NOTION_TOKEN secrets.'
+            f' until fixed. Check NOTION_DATABASE_ID and NOTION_TOKEN secrets.',
+            dedup_key='framer_templates:seen_slugs_http_error',
         )
         raise SystemExit(1)
     except Exception as e:
@@ -1192,7 +1290,8 @@ def main() -> None:
         )
         _warn_discord(
             f'ERROR: framer_templates.py — get_seen_slugs failed: {e}'
-            ' — Check GitHub Actions logs.'
+            ' — Check GitHub Actions logs.',
+            dedup_key='framer_templates:seen_slugs_other_error',
         )
         raise SystemExit(1)
 

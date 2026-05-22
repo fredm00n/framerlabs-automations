@@ -2882,5 +2882,127 @@ class TestRetryAfter(unittest.TestCase):
         self.assertEqual(delays, [2])
 
 
+# ---------------------------------------------------------------------------
+# Alert suppression (cross-run de-duplication)
+# ---------------------------------------------------------------------------
+
+
+class TestAlertSuppression(unittest.TestCase):
+    """Tests for the cross-run alert dedup helpers."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.state_path = os.path.join(self._tmp.name, 'alert_state.json')
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_no_state_file_means_not_suppressed(self):
+        self.assertFalse(ft._should_suppress_alert(
+            'anything', state_path=self.state_path))
+
+    def test_record_then_should_suppress(self):
+        ft._record_alert_sent('framer_templates:test_key', state_path=self.state_path)
+        self.assertTrue(ft._should_suppress_alert(
+            'framer_templates:test_key', state_path=self.state_path))
+
+    def test_different_keys_do_not_collide(self):
+        ft._record_alert_sent('framer_templates:a', state_path=self.state_path)
+        self.assertTrue(ft._should_suppress_alert(
+            'framer_templates:a', state_path=self.state_path))
+        self.assertFalse(ft._should_suppress_alert(
+            'framer_templates:b', state_path=self.state_path))
+
+    def test_outside_window_not_suppressed(self):
+        from datetime import datetime, timedelta, timezone
+        past = datetime.now(timezone.utc) - timedelta(minutes=120)
+        ft._record_alert_sent(
+            'framer_templates:test', state_path=self.state_path, now=past)
+        self.assertFalse(ft._should_suppress_alert(
+            'framer_templates:test', state_path=self.state_path,
+            suppress_minutes=60,
+        ))
+
+    def test_inside_window_suppressed(self):
+        from datetime import datetime, timedelta, timezone
+        recent = datetime.now(timezone.utc) - timedelta(minutes=10)
+        ft._record_alert_sent(
+            'framer_templates:test', state_path=self.state_path, now=recent)
+        self.assertTrue(ft._should_suppress_alert(
+            'framer_templates:test', state_path=self.state_path,
+            suppress_minutes=60,
+        ))
+
+    def test_corrupt_state_file_treated_as_empty(self):
+        with open(self.state_path, 'w') as f:
+            f.write('{not valid json')
+        self.assertFalse(ft._should_suppress_alert(
+            'anything', state_path=self.state_path))
+
+    def test_malformed_timestamp_treated_as_not_recorded(self):
+        with open(self.state_path, 'w') as f:
+            f.write('{"framer_templates:test": "not-a-timestamp"}')
+        self.assertFalse(ft._should_suppress_alert(
+            'framer_templates:test', state_path=self.state_path))
+
+    def test_state_path_constant_is_per_script(self):
+        """State path must be framer-templates-specific to avoid cross-script push races."""
+        self.assertIn('framer_templates', ft._ALERT_STATE_PATH)
+        self.assertTrue(ft._ALERT_STATE_PATH.startswith('state/'))
+
+
+class TestWarnDiscordSuppression(unittest.TestCase):
+    """_warn_discord must honour the dedup_key suppression contract."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.state_path = os.path.join(self._tmp.name, 'alert_state.json')
+        self._state_patcher = patch.object(ft, '_ALERT_STATE_PATH', self.state_path)
+        self._state_patcher.start()
+        os.environ['DISCORD_ALERTS_WEBHOOK_URL'] = 'https://discord.com/api/webhooks/test'
+
+    def tearDown(self):
+        self._state_patcher.stop()
+        os.environ.pop('DISCORD_ALERTS_WEBHOOK_URL', None)
+        self._tmp.cleanup()
+
+    @patch.object(ft, 'http_post')
+    def test_first_call_with_dedup_key_sends_and_records(self, mock_post):
+        ft._warn_discord('hello', dedup_key='framer_templates:k')
+        mock_post.assert_called_once()
+        # The next call would be suppressed.
+        self.assertTrue(ft._should_suppress_alert(
+            'framer_templates:k', state_path=self.state_path))
+
+    @patch.object(ft, 'http_post')
+    def test_second_call_within_window_is_suppressed(self, mock_post):
+        ft._warn_discord('first', dedup_key='framer_templates:k')
+        ft._warn_discord('second', dedup_key='framer_templates:k')
+        # Only the first call should have hit Discord.
+        self.assertEqual(mock_post.call_count, 1)
+
+    @patch.object(ft, 'http_post')
+    def test_no_dedup_key_never_suppresses(self, mock_post):
+        ft._warn_discord('first')
+        ft._warn_discord('second')
+        self.assertEqual(mock_post.call_count, 2)
+
+    @patch.object(ft, 'http_post')
+    def test_failed_send_does_not_record(self, mock_post):
+        """A transient Discord 5xx must not record a 'sent' timestamp;
+        otherwise the next alert would be silently suppressed even though
+        the first never reached the channel."""
+        import io
+        mock_post.side_effect = urllib.error.HTTPError(
+            'https://discord.com/api/webhooks/test', 503, 'Service Unavailable',
+            {}, io.BytesIO(b''),
+        )
+        ft._warn_discord('boom', dedup_key='framer_templates:k')
+        self.assertFalse(ft._should_suppress_alert(
+            'framer_templates:k', state_path=self.state_path))
+
+
 if __name__ == '__main__':
     unittest.main()
