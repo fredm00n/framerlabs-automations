@@ -26,13 +26,17 @@ jobs:
           TWITTER_ACCESS_TOKEN: ${{ secrets.TWITTER_ACCESS_TOKEN }}
           TWITTER_ACCESS_TOKEN_SECRET: ${{ secrets.TWITTER_ACCESS_TOKEN_SECRET }}
         run: python3 scripts/framer_templates.py
-      - name: Commit error log
+      - name: Commit error log and alert state
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          mkdir -p logs
-          touch logs/errors.jsonl
-          git add logs/errors.jsonl
+          # The alert-state file is committed alongside the error log so the
+          # cross-run Discord alert suppression survives between cron ticks.
+          # It is script-specific (no cross-script writes) so it does not
+          # race with reddit-leads-monitor's own commits.
+          mkdir -p logs state
+          touch logs/errors.jsonl state/alert_state-framer_templates.json
+          git add logs/errors.jsonl state/alert_state-framer_templates.json
           if git diff --cached --quiet; then
             echo "No changes to commit."
             exit 0
