@@ -1215,6 +1215,21 @@ def _write_summary(text: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Save-loop short-circuit
+# ---------------------------------------------------------------------------
+
+# After this many consecutive Notion save failures with zero successes between
+# them, treat Notion as broadly unhealthy and stop trying to save further
+# templates.  Without this, a Notion outage during a 20-template batch burns
+# ~14 s per template in retried timeouts (4 attempts x exponential backoff),
+# totalling ~280 s of wasted work with no useful outcome.  Three failures with
+# no successes is a strong signal that Notion is down for this run — bail out
+# and let the next cron tick try again.  Mirrors the same pattern used by
+# ``reddit_leads.py`` (``_CONSECUTIVE_DEDUP_FAILURE_SHORT_CIRCUIT``).
+_CONSECUTIVE_SAVE_FAILURE_SHORT_CIRCUIT = 3
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1309,10 +1324,13 @@ def main() -> None:
         print('First run — seeding DB without Discord notifications to avoid spam.')
 
     saved_templates: list[dict] = []
+    consecutive_save_failures = 0
+    save_short_circuited = False
     for template in new_templates:
         try:
             save_to_notion(template)
             saved_templates.append(template)
+            consecutive_save_failures = 0
         except urllib.error.HTTPError as e:
             notion_response = ''
             try:
@@ -1325,6 +1343,10 @@ def main() -> None:
                 f'Failed to save "{template["title"]}" to Notion',
                 {'slug': template['slug'], 'error': str(e), 'notion_response': notion_response},
             )
+            consecutive_save_failures += 1
+            if consecutive_save_failures >= _CONSECUTIVE_SAVE_FAILURE_SHORT_CIRCUIT:
+                save_short_circuited = True
+                break
             continue
         except Exception as e:
             print(f'Failed to save "{template["title"]}" to Notion: {e}')
@@ -1333,9 +1355,35 @@ def main() -> None:
                 f'Failed to save "{template["title"]}" to Notion',
                 {'slug': template['slug'], 'error': str(e)},
             )
+            consecutive_save_failures += 1
+            if consecutive_save_failures >= _CONSECUTIVE_SAVE_FAILURE_SHORT_CIRCUIT:
+                save_short_circuited = True
+                break
             continue
         action = 'Seeded' if is_first_run else 'Saved'
         print(f'{action}: {template["title"]}')
+
+    if save_short_circuited:
+        skipped = len(new_templates) - len(saved_templates) - consecutive_save_failures
+        _warn_discord(
+            f'WARNING: framer_templates.py — {consecutive_save_failures} consecutive'
+            f' Notion save failures; Notion appears unreachable.'
+            f' Short-circuited after saving {len(saved_templates)}/{len(new_templates)}'
+            f' template(s). {skipped} template(s) skipped.'
+            ' Check logs/errors.jsonl.',
+            dedup_key='framer_templates:save_short_circuited',
+        )
+        error_log.log_error(
+            'framer_templates', 'warning',
+            f'Notion appears unreachable — short-circuited after {consecutive_save_failures}'
+            f' consecutive save failures',
+            {
+                'consecutive_save_failures': consecutive_save_failures,
+                'saved': len(saved_templates),
+                'total_new': len(new_templates),
+                'skipped': skipped,
+            },
+        )
 
     if not is_first_run and saved_templates:
         notify_discord_batch(saved_templates)
