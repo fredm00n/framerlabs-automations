@@ -776,6 +776,51 @@ class TestFetchRedditPosts(unittest.TestCase):
         ctx = mock_log.call_args[0][3]
         self.assertEqual(ctx.get('body_preview', None), '')
 
+    # ------------------------------------------------------------------
+    # body_preview capture on HTTPError — the log must include the first
+    # 500 chars of the response body so the operator can see what Reddit
+    # returned (e.g. the "reddit broke!" HTML page).  Previously this was
+    # truncated to 200 chars, which cut off the useful content and was
+    # inconsistent with the 500-char cap used by the ParseError branch
+    # above and by all other body_preview captures in both scripts.
+    # ------------------------------------------------------------------
+
+    @patch('scripts.reddit_leads.http_get')
+    def test_http_error_logs_body_preview(self, mock_get):
+        """An HTTPError must log the response body as ``body_preview``."""
+        import io
+        import error_log as el
+        response_body = b'<html><head><title>reddit broke!</title></head></html>'
+        mock_get.side_effect = urllib.error.HTTPError(
+            'https://www.reddit.com/r/forhire/.rss', 500, 'Internal Server Error',
+            {}, io.BytesIO(response_body),
+        )
+        with patch.object(el, 'log_error') as mock_log:
+            result = fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss')
+        self.assertIsNone(result)
+        self.assertTrue(mock_log.called)
+        ctx = mock_log.call_args[0][3]
+        self.assertIn('body_preview', ctx)
+        self.assertIn('reddit broke!', ctx['body_preview'])
+
+    @patch('scripts.reddit_leads.http_get')
+    def test_http_error_truncates_body_preview_to_500(self, mock_get):
+        """The HTTPError body_preview must be capped at 500 chars, consistent
+        with the ParseError branch and all other body captures in the codebase."""
+        import io
+        import error_log as el
+        long_body = b'X' * 1000
+        mock_get.side_effect = urllib.error.HTTPError(
+            'https://www.reddit.com/r/forhire/.rss', 500, 'Internal Server Error',
+            {}, io.BytesIO(long_body),
+        )
+        with patch.object(el, 'log_error') as mock_log:
+            fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss')
+        ctx = mock_log.call_args[0][3]
+        self.assertLessEqual(len(ctx['body_preview']), 500)
+        self.assertGreater(len(ctx['body_preview']), 200,
+                           'body_preview must capture more than the old 200-char limit')
+
 
 # ---------------------------------------------------------------------------
 # TestUrlExistsInNotion

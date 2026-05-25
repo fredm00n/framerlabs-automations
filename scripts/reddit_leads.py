@@ -378,7 +378,7 @@ def fetch_reddit_posts(
     except urllib.error.HTTPError as e:
         body_preview = ''
         try:
-            body_preview = e.read().decode('utf-8', errors='replace')[:200]
+            body_preview = e.read().decode('utf-8', errors='replace')[:500]
         except Exception:
             pass
         print(f'HTTP {e.code} fetching r/{subreddit}: {e}')
