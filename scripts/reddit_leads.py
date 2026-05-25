@@ -21,6 +21,25 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 import error_log
+from shared import (
+    load_dotenv,
+    _should_retry,
+    _parse_retry_after,
+    _retry,
+    _RETRY_AFTER_MAX_SECONDS,
+    http_post,
+    notion_headers,
+    truncate_for_notion as _truncate_for_notion,
+    warn_discord,
+    write_summary as _write_summary,
+    should_suppress_alert as _should_suppress_alert,
+    record_alert_sent as _record_alert_sent,
+    load_alert_state as _load_alert_state,
+    save_alert_state as _save_alert_state,
+)
+
+_ALERT_STATE_PATH = 'state/alert_state-reddit_leads.json'
+_ALERT_SUPPRESS_MINUTES = 60
 
 # Seconds to wait between individual subreddit RSS fetches to avoid Reddit
 # rate-limiting (HTTP 429) when fetching 43 feeds in rapid succession.
@@ -173,165 +192,26 @@ def passes_light_filter(title: str, content: str, subreddit: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Environment & HTTP helpers (same patterns as framer_templates.py)
+# HTTP helpers (Reddit-specific: SSL verification disabled for RSS feeds)
 # ---------------------------------------------------------------------------
 
-def load_dotenv() -> None:
-    try:
-        with open('.env') as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                key, _, val = line.partition('=')
-                if key.strip() and key.strip() not in os.environ:
-                    os.environ[key.strip()] = val.strip()
-    except FileNotFoundError:
-        pass
+_SSL_CTX = ssl.create_default_context()
+_SSL_CTX.check_hostname = False
+_SSL_CTX.verify_mode = ssl.CERT_NONE
 
-
-def _should_retry(exc: Exception) -> bool:
-    if isinstance(exc, urllib.error.HTTPError):
-        return exc.code in (429, 500, 502, 503, 504)
-    if isinstance(exc, urllib.error.URLError):
-        return True  # network/connection errors
-    # Read timeouts raised after a connection is already established (e.g.
-    # during ``response.read()``) propagate as bare ``TimeoutError`` /
-    # ``socket.timeout``, NOT wrapped in ``URLError``.  Without this branch
-    # the existing ``"The read operation timed out"`` failures observed in
-    # logs/errors.jsonl bypass retry entirely.
-    if isinstance(exc, TimeoutError):
-        return True
-    return False
-
-
-# Upper bound on the sleep we will honour from a server-supplied ``Retry-After``
-# header.  Reddit's rate-limit responses can carry values in the hundreds of
-# seconds; sleeping that long inside a 15-minute cron run would consume most of
-# the run window without doing useful work, so we cap at 60 seconds while still
-# respecting the signal that we should slow down.
-_RETRY_AFTER_MAX_SECONDS = 60
-
-
-def _parse_retry_after(value: str) -> float | None:
-    """Parse an HTTP ``Retry-After`` header value into a number of seconds.
-
-    Per RFC 7231 §7.1.3, ``Retry-After`` is either a non-negative integer
-    number of seconds (e.g. ``"5"``) or an HTTP-date (e.g.
-    ``"Wed, 21 Oct 2026 07:28:00 GMT"``).  Returns the delay in seconds for
-    either form, or ``None`` if the value is missing/malformed so the caller
-    can fall back to its default backoff.
-    """
-    if not value:
-        return None
-    value = value.strip()
-    # Integer-seconds form (the common case for Discord / Notion / Twitter).
-    try:
-        seconds = float(value)
-        return seconds if seconds >= 0 else None
-    except ValueError:
-        pass
-    # HTTP-date form.
-    try:
-        from email.utils import parsedate_to_datetime
-        target = parsedate_to_datetime(value)
-        if target is None:
-            return None
-        if target.tzinfo is None:
-            target = target.replace(tzinfo=timezone.utc)
-        delta = (target - datetime.now(timezone.utc)).total_seconds()
-        return max(0.0, delta)
-    except (TypeError, ValueError):
-        return None
-
-
-def _retry(fn, max_attempts: int = 4):
-    """Run *fn* with exponential backoff, honouring ``Retry-After`` on 429s.
-
-    When the server responds with HTTP 429 and a ``Retry-After`` header, we
-    sleep at least that long (clamped to ``_RETRY_AFTER_MAX_SECONDS``) before
-    the next attempt instead of the default exponential schedule.  Reddit's
-    RSS endpoints rate-limit aggressively when fetching 43 feeds back-to-back,
-    so respecting ``Retry-After`` recovers in the minimum time the server
-    asked for instead of guessing with a fixed backoff that may be too short.
-    """
-    import time
-    delay = 2
-    last_exc = None
-    for attempt in range(max_attempts):
-        try:
-            return fn()
-        except Exception as exc:
-            last_exc = exc
-            if not _should_retry(exc) or attempt == max_attempts - 1:
-                raise
-            sleep_for: float = delay
-            if isinstance(exc, urllib.error.HTTPError) and exc.code == 429:
-                headers = getattr(exc, 'headers', None)
-                if headers is not None:
-                    retry_after = _parse_retry_after(headers.get('Retry-After', ''))
-                    if retry_after is not None:
-                        sleep_for = max(sleep_for, min(retry_after, _RETRY_AFTER_MAX_SECONDS))
-            time.sleep(sleep_for)
-            delay *= 2
-    raise last_exc  # unreachable but satisfies type checkers
+from shared import http_get as _shared_http_get, http_patch as _shared_http_patch
 
 
 def http_get(url: str, headers: dict | None = None) -> str:
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    def _do():
-        req = urllib.request.Request(
-            url,
-            headers={'User-Agent': _REDDIT_USER_AGENT, **(headers or {})},
-        )
-        with urllib.request.urlopen(req, context=ctx, timeout=30) as r:
-            return r.read().decode('utf-8')
-    return _retry(_do)
-
-
-def http_post(url: str, data: dict, headers: dict | None = None) -> dict:
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    body = json.dumps(data).encode('utf-8')
-    def _do():
-        req = urllib.request.Request(
-            url,
-            data=body,
-            headers={'Content-Type': 'application/json', 'User-Agent': 'automation-bot/1.0', **(headers or {})},
-            method='POST',
-        )
-        with urllib.request.urlopen(req, context=ctx, timeout=30) as r:
-            raw = r.read()
-            return json.loads(raw) if raw else {}
-    return _retry(_do)
+    return _shared_http_get(
+        url,
+        headers={'User-Agent': _REDDIT_USER_AGENT, **(headers or {})},
+        ssl_context=_SSL_CTX,
+    )
 
 
 def http_patch(url: str, data: dict, headers: dict | None = None) -> dict:
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    body = json.dumps(data).encode('utf-8')
-    def _do():
-        req = urllib.request.Request(
-            url,
-            data=body,
-            headers={'Content-Type': 'application/json', 'User-Agent': 'automation-bot/1.0', **(headers or {})},
-            method='PATCH',
-        )
-        with urllib.request.urlopen(req, context=ctx, timeout=30) as r:
-            raw = r.read()
-            return json.loads(raw) if raw else {}
-    return _retry(_do)
-
-
-def notion_headers() -> dict:
-    return {
-        'Authorization': f'Bearer {os.environ["NOTION_TOKEN"]}',
-        'Notion-Version': '2022-06-28',
-    }
+    return _shared_http_patch(url, data, headers=headers, ssl_context=_SSL_CTX)
 
 
 # ---------------------------------------------------------------------------
@@ -485,32 +365,6 @@ def _is_valid_iso8601_date(value: str) -> bool:
         return True
     except (ValueError, TypeError):
         return False
-
-
-def _truncate_for_notion(value: str, limit: int = 2000) -> str:
-    """Truncate *value* so its UTF-16 code-unit length is <= *limit*.
-
-    Notion's rich_text/title length validator counts UTF-16 code units, not
-    Python code points.  Supplementary Unicode characters (e.g. most emoji)
-    are 1 Python code point but 2 UTF-16 code units, so a Python ``[:2000]``
-    slice can yield a string Notion considers 2001+ chars long, causing a
-    400 ``validation_error`` (observed in ``logs/errors.jsonl`` on
-    2026-04-29 for r/smallbusiness).
-
-    We trim by repeatedly dropping the trailing code point until the UTF-16
-    encoding fits.  Returning a shorter (but valid) string is preferable to
-    a 400 that loses the entire lead.
-    """
-    if not value:
-        return value
-    # Fast path: most strings are pure BMP and will fit after a simple slice.
-    truncated = value[:limit]
-    while len(truncated.encode('utf-16-le')) // 2 > limit:
-        # Drop one code point at a time.  In practice this loops at most as
-        # many times as there are supplementary characters in the slice
-        # (typically 0-1 for Reddit content).
-        truncated = truncated[:-1]
-    return truncated
 
 
 def save_lead_to_notion(lead: dict, db_id: str) -> None:
@@ -820,150 +674,10 @@ def notify_discord_lead(lead: dict) -> bool:
         return False
 
 
-# ---------------------------------------------------------------------------
-# Alert suppression (cross-run de-duplication)
-# ---------------------------------------------------------------------------
-#
-# A sustained outage produces one identical Discord alert per 15-min cron
-# tick.  Today's incident fired the same dedup-failure alert 4× in ~30 min
-# — none of the repeats carried new diagnostic information.  We persist the
-# last-sent timestamp of each alert key to a small JSON file that the
-# workflow commits alongside ``logs/errors.jsonl``; subsequent runs skip
-# the alert if it was sent inside the suppression window.
-#
-# Per-script state file path (no cross-script writes → no push races).
-_ALERT_STATE_PATH = 'state/alert_state-reddit_leads.json'
-# Minutes to suppress an identical alert key after a successful send.  Picked
-# so a 4-tick / 60-min outage produces exactly one alert; further alerts
-# only fire when the issue persists beyond the window, which is itself a
-# useful signal that "we are still seeing this".
-_ALERT_SUPPRESS_MINUTES = 60
-
-
-def _load_alert_state(path: str | None = None) -> dict:
-    """Load the persisted alert-state map; return {} on any error.
-
-    Never raises — a missing/corrupt state file simply means "no recent
-    alert known", which is safe (the worst case is one extra Discord
-    notification, not a missed alert).
-
-    ``path`` is looked up from the module-level constant when omitted so
-    test patches of ``_ALERT_STATE_PATH`` take effect (Python evaluates
-    default argument expressions once at definition time, which would
-    otherwise bake the original path into every helper).
-    """
-    if path is None:
-        path = _ALERT_STATE_PATH
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return {}
-
-
-def _save_alert_state(state: dict, path: str | None = None) -> None:
-    """Persist *state* to disk, creating parent directories if needed."""
-    if path is None:
-        path = _ALERT_STATE_PATH
-    try:
-        d = os.path.dirname(path)
-        if d:
-            os.makedirs(d, exist_ok=True)
-        with open(path, 'w') as f:
-            json.dump(state, f, indent=2, sort_keys=True)
-    except OSError as e:
-        # Failing to persist the suppression record only means the next
-        # run won't suppress this alert key — non-fatal.
-        print(f'[alert_state] failed to save: {e}', file=sys.stderr)
-
-
-def _should_suppress_alert(
-    key: str,
-    suppress_minutes: int = _ALERT_SUPPRESS_MINUTES,
-    state_path: str | None = None,
-    now: datetime | None = None,
-) -> bool:
-    """Return True if an alert with *key* was sent within the suppress window."""
-    state = _load_alert_state(state_path)
-    last_sent_str = state.get(key)
-    if not last_sent_str:
-        return False
-    try:
-        last_sent = datetime.fromisoformat(last_sent_str)
-    except (ValueError, TypeError):
-        return False
-    if last_sent.tzinfo is None:
-        last_sent = last_sent.replace(tzinfo=timezone.utc)
-    current = now or datetime.now(timezone.utc)
-    elapsed = (current - last_sent).total_seconds()
-    return elapsed < suppress_minutes * 60
-
-
-def _record_alert_sent(
-    key: str,
-    state_path: str | None = None,
-    now: datetime | None = None,
-) -> None:
-    state = _load_alert_state(state_path)
-    state[key] = (now or datetime.now(timezone.utc)).isoformat()
-    _save_alert_state(state, state_path)
-
-
 def _warn_discord(message: str, dedup_key: str | None = None,
                   suppress_minutes: int = _ALERT_SUPPRESS_MINUTES) -> None:
-    """Send a system-level warning to the dedicated alerts webhook.
-
-    If *dedup_key* is provided and the same key was sent successfully
-    within the last *suppress_minutes* (per the persisted state file),
-    the alert is silently skipped.  The send timestamp is only recorded
-    after a successful POST, so a transient Discord 5xx does not suppress
-    the next attempt when the webhook recovers.
-    """
-    if dedup_key and _should_suppress_alert(dedup_key, suppress_minutes):
-        print(f'[alert] Suppressing duplicate alert (key={dedup_key})')
-        return
-    webhook_url = os.environ.get('DISCORD_ALERTS_WEBHOOK_URL')
-    if not webhook_url:
-        print('DISCORD_ALERTS_WEBHOOK_URL not set — skipping alert.')
-        return
-    try:
-        http_post(webhook_url, {'content': f'[framerlabs-automations] {message}'})
-    except urllib.error.HTTPError as e:
-        # Capture the Discord API response body so a misconfigured alerts
-        # webhook (revoked, deleted, rate-limited, malformed payload) can be
-        # diagnosed from logs/errors.jsonl alone — without it the log says
-        # only ``"HTTP Error <code>: <reason>"``.  Mirrors the diagnostic
-        # capture in ``notify_discord_lead`` above.
-        discord_response = ''
-        try:
-            discord_response = e.read().decode('utf-8', errors='replace')[:500]
-        except Exception:
-            pass
-        print(f'Failed to send Discord alert: {e}')
-        error_log.log_error(
-            'reddit_leads', 'warning',
-            'Failed to send Discord alert',
-            {'status': e.code, 'error': str(e), 'discord_response': discord_response},
-        )
-        return
-    except Exception as e:
-        print(f'Failed to send Discord alert: {e}')
-        error_log.log_error('reddit_leads', 'warning', 'Failed to send Discord alert', {'error': str(e)})
-        return
-    if dedup_key:
-        _record_alert_sent(dedup_key)
-
-
-def _write_summary(text: str) -> None:
-    """Append a markdown summary to the GitHub Actions job summary file, if running in CI."""
-    path = os.environ.get('GITHUB_STEP_SUMMARY')
-    if not path:
-        return
-    try:
-        with open(path, 'a') as f:
-            f.write(text + '\n')
-    except OSError:
-        pass
+    warn_discord(message, 'reddit_leads', _ALERT_STATE_PATH,
+                 dedup_key=dedup_key, suppress_minutes=suppress_minutes)
 
 
 # ---------------------------------------------------------------------------

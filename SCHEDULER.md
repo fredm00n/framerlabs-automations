@@ -43,9 +43,26 @@ Use GitHub MCP tools **only** for:
 - **Step 2**: `mcp__github__list_pull_requests` — check for existing open PRs
 - **Step 3.7 (open PR)**: `mcp__github__create_pull_request` — open a PR after pushing
 
+## Step 2b — Triage: is the fix worth implementing?
+
+Before writing any code, evaluate each candidate improvement against these two criteria:
+
+1. **Recurrence** — Did this error appear 3+ times in the 7-day log window? A single timeout that self-healed via retry is the retry logic working as designed, not a bug.
+2. **Data loss** — Did the error cause permanent data loss (a template/lead was silently missed, a notification was permanently dropped)? Or was it transient noise that resolved on retry?
+
+**Decision rules:**
+- **Neither criterion met** → Log the observation to `deferred_observations.md` (create if it doesn't exist) with the date and a one-line description. Do not implement. If the same issue accumulates across multiple sessions, it will cross the recurrence threshold naturally.
+- **Recurrence only (no data loss)** → Fix it, but keep the fix minimal — no speculative hardening for hypothetical variants of the error. Aim for under 20 new lines of logic.
+- **Data loss (any frequency)** → Fix it regardless of recurrence count. Data loss is always worth preventing.
+
+**What not to do:**
+- Do not add handling for hypothetical failure modes that haven't been observed in production.
+- Do not add RFC-complete parsing for protocols when only one format has been seen in practice (e.g. don't add HTTP-date parsing for Retry-After if only integer-seconds have been observed).
+- Do not add tests for edge cases of the fix that cannot occur given the actual inputs from the APIs this codebase talks to.
+
 ## Step 3 — Implement if worthwhile
 
-If you find a clear, self-contained improvement with no existing open PR covering it:
+If you find a clear, self-contained improvement that passes the Step 2b triage and has no existing open PR covering it:
 
 1. Create a branch: `git checkout -b claude/improve-<script>-<short-description>`
 2. Implement the change
