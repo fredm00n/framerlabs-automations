@@ -3004,5 +3004,199 @@ class TestWarnDiscordSuppression(unittest.TestCase):
             'framer_templates:k', state_path=self.state_path))
 
 
+# ---------------------------------------------------------------------------
+# Save-loop short-circuit on consecutive Notion failures
+# ---------------------------------------------------------------------------
+
+class TestSaveShortCircuit(unittest.TestCase):
+    """Tests for the consecutive save-failure short-circuit in main()."""
+
+    def setUp(self):
+        os.environ['NOTION_TOKEN'] = 'test_token'
+        os.environ['NOTION_DATABASE_ID'] = 'test_db_id'
+        os.environ['DISCORD_WEBHOOK_URL_TEMPLATES'] = 'https://discord.com/api/webhooks/test'
+
+    def _make_templates(self, count):
+        return [
+            {
+                'slug': f'slug-{i}', 'title': f'Template {i}',
+                'url': f'https://www.framer.com/marketplace/templates/slug-{i}/',
+                'author': 'A', 'author_slug': '', 'price': 'Free',
+                'thumbnail': '', 'published_at': '',
+            }
+            for i in range(count)
+        ]
+
+    def test_three_consecutive_failures_short_circuits(self):
+        """When save_to_notion fails 3 times in a row, main() must stop trying
+        further saves instead of grinding through the whole batch."""
+        templates = self._make_templates(10)
+        save_mock = MagicMock(side_effect=Exception('Notion unreachable'))
+        with patch('framer_templates.fetch_framer_templates', return_value=templates), \
+             patch('framer_templates.get_seen_slugs', return_value=set()), \
+             patch('framer_templates.save_to_notion', save_mock), \
+             patch('framer_templates.notify_discord_batch'), \
+             patch('framer_templates.post_to_x'), \
+             patch('framer_templates._warn_discord'), \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            ft.main()
+        # save_to_notion should be called exactly 3 times (the short-circuit
+        # threshold) — not 10 times.
+        self.assertEqual(save_mock.call_count, ft._CONSECUTIVE_SAVE_FAILURE_SHORT_CIRCUIT)
+
+    def test_short_circuit_fires_discord_alert(self):
+        """When the save loop short-circuits, a Discord alert must be sent."""
+        templates = self._make_templates(10)
+        save_mock = MagicMock(side_effect=Exception('Notion down'))
+        with patch('framer_templates.fetch_framer_templates', return_value=templates), \
+             patch('framer_templates.get_seen_slugs', return_value=set()), \
+             patch('framer_templates.save_to_notion', save_mock), \
+             patch('framer_templates.notify_discord_batch'), \
+             patch('framer_templates.post_to_x'), \
+             patch('framer_templates._warn_discord') as warn_mock, \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            ft.main()
+        short_circuit_calls = [
+            c for c in warn_mock.call_args_list
+            if 'save_short_circuited' in str(c)
+        ]
+        self.assertTrue(short_circuit_calls,
+                        'Expected a _warn_discord call with save_short_circuited dedup_key')
+
+    def test_short_circuit_logs_warning_with_context(self):
+        """Short-circuit must log a warning with save counts in context."""
+        import error_log as el
+        templates = self._make_templates(10)
+        save_mock = MagicMock(side_effect=Exception('timeout'))
+        with patch('framer_templates.fetch_framer_templates', return_value=templates), \
+             patch('framer_templates.get_seen_slugs', return_value=set()), \
+             patch('framer_templates.save_to_notion', save_mock), \
+             patch('framer_templates.notify_discord_batch'), \
+             patch('framer_templates.post_to_x'), \
+             patch('framer_templates._warn_discord'), \
+             patch.object(el, 'log_error') as mock_log, \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            ft.main()
+        short_circuit_calls = [
+            c for c in mock_log.call_args_list
+            if len(c[0]) >= 3 and 'short-circuited' in c[0][2]
+        ]
+        self.assertTrue(short_circuit_calls,
+                        'Expected an error_log entry for save short-circuit')
+        ctx = short_circuit_calls[0][0][3]
+        self.assertEqual(ctx['consecutive_save_failures'],
+                         ft._CONSECUTIVE_SAVE_FAILURE_SHORT_CIRCUIT)
+        self.assertEqual(ctx['saved'], 0)
+        self.assertEqual(ctx['total_new'], 10)
+
+    def test_alternating_success_failure_does_not_short_circuit(self):
+        """A successful save between failures resets the counter so the
+        short-circuit never fires."""
+        templates = self._make_templates(6)
+        # Pattern: fail, success, fail, success, fail, success
+        save_mock = MagicMock(side_effect=[
+            Exception('err'), None, Exception('err'), None,
+            Exception('err'), None,
+        ])
+        with patch('framer_templates.fetch_framer_templates', return_value=templates), \
+             patch('framer_templates.get_seen_slugs', return_value=set()), \
+             patch('framer_templates.save_to_notion', save_mock), \
+             patch('framer_templates.notify_discord_batch'), \
+             patch('framer_templates.post_to_x'), \
+             patch('framer_templates._warn_discord') as warn_mock, \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            ft.main()
+        # All 6 templates should have been attempted (no short-circuit).
+        self.assertEqual(save_mock.call_count, 6)
+        # No short-circuit alert should have fired.
+        short_circuit_calls = [
+            c for c in warn_mock.call_args_list
+            if 'save_short_circuited' in str(c)
+        ]
+        self.assertEqual(short_circuit_calls, [])
+
+    def test_two_failures_then_success_resets_counter(self):
+        """Two consecutive failures followed by a success must reset the
+        counter, allowing the remaining saves to proceed."""
+        templates = self._make_templates(5)
+        # fail, fail, success, fail, success
+        save_mock = MagicMock(side_effect=[
+            Exception('err'), Exception('err'), None,
+            Exception('err'), None,
+        ])
+        with patch('framer_templates.fetch_framer_templates', return_value=templates), \
+             patch('framer_templates.get_seen_slugs', return_value=set()), \
+             patch('framer_templates.save_to_notion', save_mock), \
+             patch('framer_templates.notify_discord_batch'), \
+             patch('framer_templates.post_to_x'), \
+             patch('framer_templates._warn_discord'), \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            ft.main()
+        # All 5 should be attempted — counter resets after the 3rd call.
+        self.assertEqual(save_mock.call_count, 5)
+
+    def test_short_circuit_with_http_errors(self):
+        """HTTPError failures (not just generic Exceptions) must also trigger
+        the short-circuit."""
+        import io
+        templates = self._make_templates(10)
+        http_err = urllib.error.HTTPError(
+            None, 500, 'Internal Server Error', {},
+            io.BytesIO(b'{}'),
+        )
+        save_mock = MagicMock(side_effect=http_err)
+        with patch('framer_templates.fetch_framer_templates', return_value=templates), \
+             patch('framer_templates.get_seen_slugs', return_value=set()), \
+             patch('framer_templates.save_to_notion', save_mock), \
+             patch('framer_templates.notify_discord_batch'), \
+             patch('framer_templates.post_to_x'), \
+             patch('framer_templates._warn_discord'), \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            ft.main()
+        self.assertEqual(save_mock.call_count, ft._CONSECUTIVE_SAVE_FAILURE_SHORT_CIRCUIT)
+
+    def test_short_circuit_still_notifies_successfully_saved_templates(self):
+        """Templates saved before the short-circuit must still be notified."""
+        templates = self._make_templates(10)
+        # First 2 succeed, then 3 fail → short-circuit.
+        save_mock = MagicMock(side_effect=[
+            None, None,
+            Exception('err'), Exception('err'), Exception('err'),
+        ])
+        notify_mock = MagicMock()
+        with patch('framer_templates.fetch_framer_templates', return_value=templates), \
+             patch('framer_templates.get_seen_slugs', return_value={'existing-slug'}), \
+             patch('framer_templates.save_to_notion', save_mock), \
+             patch('framer_templates.notify_discord_batch', notify_mock), \
+             patch('framer_templates.post_to_x'), \
+             patch('framer_templates._warn_discord'), \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            ft.main()
+        # Notify should have been called with the 2 successfully saved templates.
+        notify_mock.assert_called_once()
+        notified = notify_mock.call_args[0][0]
+        self.assertEqual(len(notified), 2)
+
+    def test_short_circuit_skips_notification_on_first_run(self):
+        """On first run (seeding), no Discord notification should fire even
+        after short-circuit — matches existing first-run suppression."""
+        templates = self._make_templates(10)
+        save_mock = MagicMock(side_effect=[
+            None, None, None,
+            Exception('err'), Exception('err'), Exception('err'),
+        ])
+        notify_mock = MagicMock()
+        with patch('framer_templates.fetch_framer_templates', return_value=templates), \
+             patch('framer_templates.get_seen_slugs', return_value=set()), \
+             patch('framer_templates.save_to_notion', save_mock), \
+             patch('framer_templates.notify_discord_batch', notify_mock), \
+             patch('framer_templates.post_to_x'), \
+             patch('framer_templates._warn_discord'), \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            ft.main()
+        # First run → no notifications despite successful saves.
+        notify_mock.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()
