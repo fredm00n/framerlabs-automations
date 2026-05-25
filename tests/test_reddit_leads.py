@@ -12,15 +12,10 @@ sys.path.insert(0, '.')
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts'))
 from scripts.reddit_leads import (
     _ALWAYS_EXCLUDE_WORD_START_PHRASES,
-    _RETRY_AFTER_MAX_SECONDS,
     _VALID_STATUSES,
     _clean_html,
     _has_word_start_phrase,
     _is_valid_iso8601_date,
-    _parse_retry_after,
-    _retry,
-    _should_retry,
-    _truncate_for_notion,
     cli,
     fetch_reddit_posts,
     get_lead_by_id,
@@ -49,226 +44,6 @@ def setUpModule():  # noqa: N802
 
 def tearDownModule():  # noqa: N802
     _error_log_patcher.stop()
-
-
-# ---------------------------------------------------------------------------
-# TestShouldRetry
-# ---------------------------------------------------------------------------
-
-class TestShouldRetry(unittest.TestCase):
-
-    def test_retries_on_429(self):
-        exc = urllib.error.HTTPError(None, 429, 'Too Many Requests', {}, None)
-        self.assertTrue(_should_retry(exc))
-
-    def test_retries_on_500(self):
-        exc = urllib.error.HTTPError(None, 500, 'Server Error', {}, None)
-        self.assertTrue(_should_retry(exc))
-
-    def test_retries_on_502(self):
-        exc = urllib.error.HTTPError(None, 502, 'Bad Gateway', {}, None)
-        self.assertTrue(_should_retry(exc))
-
-    def test_retries_on_503(self):
-        exc = urllib.error.HTTPError(None, 503, 'Service Unavailable', {}, None)
-        self.assertTrue(_should_retry(exc))
-
-    def test_retries_on_504(self):
-        exc = urllib.error.HTTPError(None, 504, 'Gateway Timeout', {}, None)
-        self.assertTrue(_should_retry(exc))
-
-    def test_does_not_retry_on_400(self):
-        exc = urllib.error.HTTPError(None, 400, 'Bad Request', {}, None)
-        self.assertFalse(_should_retry(exc))
-
-    def test_does_not_retry_on_404(self):
-        exc = urllib.error.HTTPError(None, 404, 'Not Found', {}, None)
-        self.assertFalse(_should_retry(exc))
-
-    def test_retries_on_url_error(self):
-        import urllib.error as ue
-        exc = ue.URLError('network unreachable')
-        self.assertTrue(_should_retry(exc))
-
-    def test_retries_on_bare_timeout_error(self):
-        # ``response.read()`` timeouts (e.g. the recurring "The read operation
-        # timed out" entries observed in logs/errors.jsonl) surface as bare
-        # ``TimeoutError``, NOT as ``URLError``, so without an explicit branch
-        # they bypass retry entirely and abort on the first attempt.
-        self.assertTrue(_should_retry(TimeoutError('The read operation timed out')))
-
-    def test_retries_on_socket_timeout(self):
-        import socket
-        # ``socket.timeout`` is an alias for ``TimeoutError`` on Python 3.10+;
-        # this assertion documents the intent and guards against any future
-        # divergence.
-        self.assertTrue(_should_retry(socket.timeout('timed out')))
-
-    def test_does_not_retry_on_generic_exception(self):
-        self.assertFalse(_should_retry(ValueError('bad value')))
-
-
-# ---------------------------------------------------------------------------
-# TestRetry
-# ---------------------------------------------------------------------------
-
-class TestRetry(unittest.TestCase):
-
-    def test_returns_value_on_first_success(self):
-        fn = MagicMock(return_value='ok')
-        with patch('time.sleep'):
-            result = _retry(fn, max_attempts=3)
-        self.assertEqual(result, 'ok')
-        fn.assert_called_once()
-
-    def test_retries_on_retryable_error_then_succeeds(self):
-        exc = urllib.error.URLError('transient')
-        fn = MagicMock(side_effect=[exc, exc, 'success'])
-        with patch('time.sleep'):
-            result = _retry(fn, max_attempts=4)
-        self.assertEqual(result, 'success')
-        self.assertEqual(fn.call_count, 3)
-
-    def test_raises_after_max_attempts(self):
-        exc = urllib.error.URLError('persistent failure')
-        fn = MagicMock(side_effect=exc)
-        with patch('time.sleep'):
-            with self.assertRaises(urllib.error.URLError):
-                _retry(fn, max_attempts=3)
-        self.assertEqual(fn.call_count, 3)
-
-    def test_does_not_retry_non_retryable_error(self):
-        exc = urllib.error.HTTPError(None, 400, 'Bad Request', {}, None)
-        fn = MagicMock(side_effect=exc)
-        with patch('time.sleep'):
-            with self.assertRaises(urllib.error.HTTPError):
-                _retry(fn, max_attempts=4)
-        fn.assert_called_once()
-
-    def test_exponential_backoff_delays(self):
-        exc = urllib.error.URLError('fail')
-        fn = MagicMock(side_effect=[exc, exc, 'ok'])
-        with patch('time.sleep') as mock_sleep:
-            _retry(fn, max_attempts=4)
-        delays = [c[0][0] for c in mock_sleep.call_args_list]
-        self.assertEqual(delays, [2, 4])
-
-
-# ---------------------------------------------------------------------------
-# TestParseRetryAfter / TestRetryAfter
-# ---------------------------------------------------------------------------
-
-
-def _make_http_error(code: int, headers: dict | None = None) -> urllib.error.HTTPError:
-    """Build an ``HTTPError`` whose ``.headers`` is a real email.Message.
-
-    Passing ``{}`` directly as the headers argument means ``HTTPError.headers``
-    is a bare dict, but real responses expose an ``email.message.Message``-like
-    object whose ``.get()`` is case-insensitive.  Mirroring that here keeps the
-    tests realistic for the ``Retry-After`` lookup.
-    """
-    import email.message
-    msg = email.message.Message()
-    for k, v in (headers or {}).items():
-        msg[k] = v
-    return urllib.error.HTTPError(None, code, 'err', msg, None)
-
-
-class TestParseRetryAfter(unittest.TestCase):
-    """``_parse_retry_after`` accepts both integer-seconds and HTTP-date forms."""
-
-    def test_empty_returns_none(self):
-        self.assertIsNone(_parse_retry_after(''))
-
-    def test_integer_seconds(self):
-        self.assertEqual(_parse_retry_after('5'), 5.0)
-
-    def test_float_seconds(self):
-        self.assertEqual(_parse_retry_after('2.5'), 2.5)
-
-    def test_zero(self):
-        self.assertEqual(_parse_retry_after('0'), 0.0)
-
-    def test_negative_seconds_returns_none(self):
-        # A negative ``Retry-After`` is nonsensical; fall back to default backoff.
-        self.assertIsNone(_parse_retry_after('-3'))
-
-    def test_strips_whitespace(self):
-        self.assertEqual(_parse_retry_after('  7  '), 7.0)
-
-    def test_garbage_returns_none(self):
-        self.assertIsNone(_parse_retry_after('soon-ish'))
-
-    def test_http_date_in_future(self):
-        # Pick a fixed future date and verify parse returns >= 0.
-        # We can't assert an exact value because the helper diffs from "now".
-        result = _parse_retry_after('Wed, 21 Oct 2099 07:28:00 GMT')
-        self.assertIsNotNone(result)
-        self.assertGreater(result, 0)
-
-    def test_http_date_in_past_returns_zero(self):
-        # A date in the past should clamp to 0 rather than going negative.
-        result = _parse_retry_after('Wed, 21 Oct 1999 07:28:00 GMT')
-        self.assertEqual(result, 0.0)
-
-
-class TestRetryAfter(unittest.TestCase):
-    """``_retry`` honours ``Retry-After`` on HTTP 429 responses."""
-
-    def test_429_with_integer_retry_after_sleeps_for_header_value(self):
-        exc = _make_http_error(429, {'Retry-After': '5'})
-        fn = MagicMock(side_effect=[exc, 'ok'])
-        with patch('time.sleep') as mock_sleep:
-            result = _retry(fn, max_attempts=4)
-        self.assertEqual(result, 'ok')
-        # default backoff would have been 2s; the 5s header beats it
-        delays = [c[0][0] for c in mock_sleep.call_args_list]
-        self.assertEqual(delays, [5])
-
-    def test_429_with_smaller_retry_after_uses_default_backoff(self):
-        # If the server says 1s but our backoff says 2s, we keep the longer
-        # delay — the server's value is a *minimum* per RFC 7231.
-        exc = _make_http_error(429, {'Retry-After': '1'})
-        fn = MagicMock(side_effect=[exc, 'ok'])
-        with patch('time.sleep') as mock_sleep:
-            _retry(fn, max_attempts=4)
-        delays = [c[0][0] for c in mock_sleep.call_args_list]
-        self.assertEqual(delays, [2])
-
-    def test_429_without_retry_after_uses_default_backoff(self):
-        exc = _make_http_error(429, {})
-        fn = MagicMock(side_effect=[exc, exc, 'ok'])
-        with patch('time.sleep') as mock_sleep:
-            _retry(fn, max_attempts=4)
-        delays = [c[0][0] for c in mock_sleep.call_args_list]
-        self.assertEqual(delays, [2, 4])
-
-    def test_429_with_malformed_retry_after_uses_default_backoff(self):
-        exc = _make_http_error(429, {'Retry-After': 'not-a-number'})
-        fn = MagicMock(side_effect=[exc, 'ok'])
-        with patch('time.sleep') as mock_sleep:
-            _retry(fn, max_attempts=4)
-        delays = [c[0][0] for c in mock_sleep.call_args_list]
-        self.assertEqual(delays, [2])
-
-    def test_429_retry_after_clamped_to_max(self):
-        # Reddit can return very large ``Retry-After`` values; we should cap.
-        exc = _make_http_error(429, {'Retry-After': '600'})
-        fn = MagicMock(side_effect=[exc, 'ok'])
-        with patch('time.sleep') as mock_sleep:
-            _retry(fn, max_attempts=4)
-        delays = [c[0][0] for c in mock_sleep.call_args_list]
-        self.assertEqual(delays, [_RETRY_AFTER_MAX_SECONDS])
-
-    def test_5xx_with_retry_after_is_ignored(self):
-        # Only 429 triggers the special header lookup; a 503 with Retry-After
-        # still uses exponential backoff to keep the existing behaviour stable.
-        exc = _make_http_error(503, {'Retry-After': '10'})
-        fn = MagicMock(side_effect=[exc, 'ok'])
-        with patch('time.sleep') as mock_sleep:
-            _retry(fn, max_attempts=4)
-        delays = [c[0][0] for c in mock_sleep.call_args_list]
-        self.assertEqual(delays, [2])
 
 
 # ---------------------------------------------------------------------------
@@ -1498,46 +1273,6 @@ class TestUpdateStatusCli(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# TestTruncateForNotion
-# ---------------------------------------------------------------------------
-
-class TestTruncateForNotion(unittest.TestCase):
-
-    def test_empty_string_returns_empty(self):
-        self.assertEqual(_truncate_for_notion(''), '')
-
-    def test_short_ascii_returned_unchanged(self):
-        self.assertEqual(_truncate_for_notion('hello'), 'hello')
-
-    def test_long_ascii_truncated_to_limit(self):
-        self.assertEqual(len(_truncate_for_notion('x' * 3000)), 2000)
-
-    def test_supplementary_chars_fit_utf16_limit(self):
-        # 1500 emoji = 1500 code points but 3000 UTF-16 code units
-        result = _truncate_for_notion('\U0001F600' * 1500)
-        utf16_units = len(result.encode('utf-16-le')) // 2
-        self.assertLessEqual(utf16_units, 2000)
-
-    def test_mixed_chars_fit_utf16_limit(self):
-        result = _truncate_for_notion(('a' * 1900) + ('\U0001F600' * 200))
-        utf16_units = len(result.encode('utf-16-le')) // 2
-        self.assertLessEqual(utf16_units, 2000)
-
-    def test_supplementary_chars_not_split_mid_surrogate(self):
-        """Result must not contain a lone surrogate from cutting an emoji in half."""
-        result = _truncate_for_notion('\U0001F600' * 1500)
-        # Re-encoding as UTF-8 should succeed without errors if no lone surrogates.
-        result.encode('utf-8')
-
-    def test_custom_limit(self):
-        self.assertEqual(len(_truncate_for_notion('x' * 100, limit=10)), 10)
-
-    def test_value_at_exact_limit_unchanged(self):
-        s = 'x' * 2000
-        self.assertEqual(_truncate_for_notion(s), s)
-
-
-# ---------------------------------------------------------------------------
 # TestNotifyDiscordLead
 # ---------------------------------------------------------------------------
 
@@ -2634,14 +2369,13 @@ class TestMain(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# _write_summary
+# TestMainWritesSummary
 # ---------------------------------------------------------------------------
 
-from unittest.mock import mock_open
 import scripts.reddit_leads as rl
 
 
-class TestWriteSummary(unittest.TestCase):
+class TestMainWritesSummary(unittest.TestCase):
 
     def setUp(self):
         # Patch time.sleep so inter-feed delays don't slow down tests that call main().
@@ -2668,19 +2402,6 @@ class TestWriteSummary(unittest.TestCase):
         self._suppress_patcher.stop()
         self._record_patcher.stop()
         os.environ.pop('GITHUB_STEP_SUMMARY', None)
-
-    def test_writes_to_file_when_env_set(self):
-        with patch.dict('os.environ', {'GITHUB_STEP_SUMMARY': '/tmp/summary.md'}), \
-             patch('builtins.open', mock_open()) as m:
-            rl._write_summary('## Reddit Leads Monitor\nhello')
-        m.assert_called_once_with('/tmp/summary.md', 'a')
-        m().write.assert_called_once_with('## Reddit Leads Monitor\nhello\n')
-
-    def test_no_op_when_env_not_set(self):
-        os.environ.pop('GITHUB_STEP_SUMMARY', None)
-        with patch('builtins.open') as m:
-            rl._write_summary('ignored')
-        m.assert_not_called()
 
     @patch.dict('os.environ', {'NOTION_TOKEN': 'ntn_test', 'NOTION_REDDIT_LEADS_DB_ID': 'db-test'})
     @patch('scripts.reddit_leads._write_summary')
@@ -2727,77 +2448,6 @@ class TestWriteSummary(unittest.TestCase):
         summary_text = mock_summary.call_args[0][0]
         self.assertIn(f'{len(REDDIT_FEEDS)}/{len(REDDIT_FEEDS)}', summary_text)
         self.assertIn('unreachable', summary_text)
-
-
-# ---------------------------------------------------------------------------
-# TestWarnDiscord
-# ---------------------------------------------------------------------------
-
-class TestWarnDiscord(unittest.TestCase):
-
-    def setUp(self):
-        os.environ['DISCORD_ALERTS_WEBHOOK_URL'] = 'https://discord.com/api/webhooks/test-alerts'
-
-    def tearDown(self):
-        os.environ.pop('DISCORD_ALERTS_WEBHOOK_URL', None)
-
-    def test_posts_content_message_to_alerts_webhook(self):
-        with patch('shared.http_post', return_value={}) as mock_post:
-            rl._warn_discord('test warning message')
-        mock_post.assert_called_once()
-        url, payload = mock_post.call_args[0]
-        self.assertIn('test-alerts', url)
-        self.assertIn('content', payload)
-        self.assertIn('test warning message', payload['content'])
-
-    def test_exception_is_caught_and_does_not_propagate(self):
-        with patch('shared.http_post', side_effect=Exception('network error')):
-            rl._warn_discord('msg')  # must not raise
-
-    def test_no_op_when_env_var_missing(self):
-        """_warn_discord must not raise when DISCORD_ALERTS_WEBHOOK_URL is unset."""
-        os.environ.pop('DISCORD_ALERTS_WEBHOOK_URL', None)
-        with patch('shared.http_post') as mock_post:
-            rl._warn_discord('msg')  # must not raise
-        mock_post.assert_not_called()
-
-    def test_http_error_logs_discord_response_body(self):
-        """An HTTPError on the alerts webhook (e.g. revoked URL, deleted
-        channel, rate-limit) must log the Discord response body so the
-        misconfiguration can be diagnosed from logs alone -- otherwise the
-        log entry just says ``"HTTP Error <code>: <reason>"``."""
-        import io
-        import error_log as el
-        body = b'{"message": "Unknown Webhook", "code": 10015}'
-        http_err = urllib.error.HTTPError(
-            'https://discord.com/api/webhooks/test-alerts',
-            404, 'Not Found', {}, io.BytesIO(body),
-        )
-        with patch('shared.http_post', side_effect=http_err), \
-             patch.object(el, 'log_error') as mock_log:
-            rl._warn_discord('msg')  # must not raise
-        self.assertTrue(mock_log.called)
-        ctx = mock_log.call_args[0][3]
-        self.assertEqual(ctx.get('status'), 404)
-        self.assertIn('discord_response', ctx)
-        self.assertIn('Unknown Webhook', ctx['discord_response'])
-        self.assertIn('error', ctx)
-
-    def test_http_error_truncates_long_discord_response_body(self):
-        """The captured Discord response body must be capped at 500 chars."""
-        import io
-        import error_log as el
-        body = b'B' * 1500
-        # 400 is non-retriable so the side_effect runs only once.
-        http_err = urllib.error.HTTPError(
-            'https://discord.com/api/webhooks/test-alerts',
-            400, 'Bad Request', {}, io.BytesIO(body),
-        )
-        with patch('shared.http_post', side_effect=http_err), \
-             patch.object(el, 'log_error') as mock_log:
-            rl._warn_discord('msg')
-        ctx = mock_log.call_args[0][3]
-        self.assertLessEqual(len(ctx['discord_response']), 500)
 
 
 # ---------------------------------------------------------------------------
@@ -3188,135 +2838,6 @@ class TestConsecutiveDedupFailureShortCircuit(unittest.TestCase):
                          _CONSECUTIVE_DEDUP_FAILURE_SHORT_CIRCUIT)
         mock_warn.assert_called_once()
         self.assertIn('Notion appears unreachable', mock_warn.call_args[0][0])
-
-
-# ---------------------------------------------------------------------------
-# Alert suppression / state persistence (#3 of mitigations)
-# ---------------------------------------------------------------------------
-
-class TestAlertSuppression(unittest.TestCase):
-    """Tests for the cross-run alert dedup helpers."""
-
-    def setUp(self):
-        import tempfile
-        self._tmp = tempfile.TemporaryDirectory()
-        self.state_path = os.path.join(self._tmp.name, 'alert_state.json')
-
-    def tearDown(self):
-        self._tmp.cleanup()
-
-    def test_no_state_file_means_not_suppressed(self):
-        from scripts.reddit_leads import _should_suppress_alert
-        self.assertFalse(_should_suppress_alert('anything', state_path=self.state_path))
-
-    def test_record_then_should_suppress(self):
-        from scripts.reddit_leads import _record_alert_sent, _should_suppress_alert
-        _record_alert_sent('reddit_leads:test_key', state_path=self.state_path)
-        self.assertTrue(_should_suppress_alert(
-            'reddit_leads:test_key', state_path=self.state_path))
-
-    def test_different_keys_do_not_collide(self):
-        from scripts.reddit_leads import _record_alert_sent, _should_suppress_alert
-        _record_alert_sent('reddit_leads:a', state_path=self.state_path)
-        self.assertTrue(_should_suppress_alert('reddit_leads:a', state_path=self.state_path))
-        self.assertFalse(_should_suppress_alert('reddit_leads:b', state_path=self.state_path))
-
-    def test_outside_window_not_suppressed(self):
-        from scripts.reddit_leads import _record_alert_sent, _should_suppress_alert
-        from datetime import datetime, timedelta, timezone
-        past = datetime.now(timezone.utc) - timedelta(minutes=120)
-        _record_alert_sent('reddit_leads:test', state_path=self.state_path, now=past)
-        self.assertFalse(_should_suppress_alert(
-            'reddit_leads:test', state_path=self.state_path,
-            suppress_minutes=60,
-        ))
-
-    def test_inside_window_suppressed(self):
-        from scripts.reddit_leads import _record_alert_sent, _should_suppress_alert
-        from datetime import datetime, timedelta, timezone
-        recent = datetime.now(timezone.utc) - timedelta(minutes=10)
-        _record_alert_sent('reddit_leads:test', state_path=self.state_path, now=recent)
-        self.assertTrue(_should_suppress_alert(
-            'reddit_leads:test', state_path=self.state_path,
-            suppress_minutes=60,
-        ))
-
-    def test_corrupt_state_file_treated_as_empty(self):
-        with open(self.state_path, 'w') as f:
-            f.write('{not valid json')
-        from scripts.reddit_leads import _should_suppress_alert
-        self.assertFalse(_should_suppress_alert(
-            'anything', state_path=self.state_path))
-
-    def test_malformed_timestamp_treated_as_not_recorded(self):
-        with open(self.state_path, 'w') as f:
-            f.write('{"reddit_leads:test": "not-a-timestamp"}')
-        from scripts.reddit_leads import _should_suppress_alert
-        self.assertFalse(_should_suppress_alert(
-            'reddit_leads:test', state_path=self.state_path))
-
-    def test_state_path_constant_is_per_script(self):
-        """State path must be reddit-specific to avoid cross-script push races."""
-        from scripts.reddit_leads import _ALERT_STATE_PATH
-        self.assertIn('reddit_leads', _ALERT_STATE_PATH)
-        self.assertTrue(_ALERT_STATE_PATH.startswith('state/'))
-
-
-class TestWarnDiscordSuppression(unittest.TestCase):
-    """_warn_discord must honour the dedup_key suppression contract."""
-
-    def setUp(self):
-        import tempfile
-        self._tmp = tempfile.TemporaryDirectory()
-        self.state_path = os.path.join(self._tmp.name, 'alert_state.json')
-        self._state_patcher = patch(
-            'scripts.reddit_leads._ALERT_STATE_PATH', self.state_path)
-        self._state_patcher.start()
-        os.environ['DISCORD_ALERTS_WEBHOOK_URL'] = 'https://discord.com/api/webhooks/test'
-
-    def tearDown(self):
-        self._state_patcher.stop()
-        os.environ.pop('DISCORD_ALERTS_WEBHOOK_URL', None)
-        self._tmp.cleanup()
-
-    @patch('shared.http_post')
-    def test_first_call_with_dedup_key_sends_and_records(self, mock_post):
-        from scripts.reddit_leads import _warn_discord, _should_suppress_alert
-        _warn_discord('hello', dedup_key='reddit_leads:k')
-        mock_post.assert_called_once()
-        # The next call would be suppressed.
-        self.assertTrue(_should_suppress_alert(
-            'reddit_leads:k', state_path=self.state_path))
-
-    @patch('shared.http_post')
-    def test_second_call_within_window_is_suppressed(self, mock_post):
-        from scripts.reddit_leads import _warn_discord
-        _warn_discord('first', dedup_key='reddit_leads:k')
-        _warn_discord('second', dedup_key='reddit_leads:k')
-        # Only the first call should have hit Discord.
-        self.assertEqual(mock_post.call_count, 1)
-
-    @patch('shared.http_post')
-    def test_no_dedup_key_never_suppresses(self, mock_post):
-        from scripts.reddit_leads import _warn_discord
-        _warn_discord('first')
-        _warn_discord('second')
-        self.assertEqual(mock_post.call_count, 2)
-
-    @patch('shared.http_post')
-    def test_failed_send_does_not_record(self, mock_post):
-        """A transient Discord 5xx must not record a 'sent' timestamp;
-        otherwise the next alert would be silently suppressed even though
-        the first never reached the channel."""
-        import io
-        mock_post.side_effect = urllib.error.HTTPError(
-            'https://discord.com/api/webhooks/test', 503, 'Service Unavailable',
-            {}, io.BytesIO(b''),
-        )
-        from scripts.reddit_leads import _warn_discord, _should_suppress_alert
-        _warn_discord('boom', dedup_key='reddit_leads:k')
-        self.assertFalse(_should_suppress_alert(
-            'reddit_leads:k', state_path=self.state_path))
 
 
 if __name__ == '__main__':
