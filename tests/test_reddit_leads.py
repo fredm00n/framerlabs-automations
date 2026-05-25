@@ -2742,7 +2742,7 @@ class TestWarnDiscord(unittest.TestCase):
         os.environ.pop('DISCORD_ALERTS_WEBHOOK_URL', None)
 
     def test_posts_content_message_to_alerts_webhook(self):
-        with patch('scripts.reddit_leads.http_post', return_value={}) as mock_post:
+        with patch('shared.http_post', return_value={}) as mock_post:
             rl._warn_discord('test warning message')
         mock_post.assert_called_once()
         url, payload = mock_post.call_args[0]
@@ -2751,13 +2751,13 @@ class TestWarnDiscord(unittest.TestCase):
         self.assertIn('test warning message', payload['content'])
 
     def test_exception_is_caught_and_does_not_propagate(self):
-        with patch('scripts.reddit_leads.http_post', side_effect=Exception('network error')):
+        with patch('shared.http_post', side_effect=Exception('network error')):
             rl._warn_discord('msg')  # must not raise
 
     def test_no_op_when_env_var_missing(self):
         """_warn_discord must not raise when DISCORD_ALERTS_WEBHOOK_URL is unset."""
         os.environ.pop('DISCORD_ALERTS_WEBHOOK_URL', None)
-        with patch('scripts.reddit_leads.http_post') as mock_post:
+        with patch('shared.http_post') as mock_post:
             rl._warn_discord('msg')  # must not raise
         mock_post.assert_not_called()
 
@@ -2773,7 +2773,7 @@ class TestWarnDiscord(unittest.TestCase):
             'https://discord.com/api/webhooks/test-alerts',
             404, 'Not Found', {}, io.BytesIO(body),
         )
-        with patch('scripts.reddit_leads.http_post', side_effect=http_err), \
+        with patch('shared.http_post', side_effect=http_err), \
              patch.object(el, 'log_error') as mock_log:
             rl._warn_discord('msg')  # must not raise
         self.assertTrue(mock_log.called)
@@ -2793,7 +2793,7 @@ class TestWarnDiscord(unittest.TestCase):
             'https://discord.com/api/webhooks/test-alerts',
             400, 'Bad Request', {}, io.BytesIO(body),
         )
-        with patch('scripts.reddit_leads.http_post', side_effect=http_err), \
+        with patch('shared.http_post', side_effect=http_err), \
              patch.object(el, 'log_error') as mock_log:
             rl._warn_discord('msg')
         ctx = mock_log.call_args[0][3]
@@ -3279,7 +3279,7 @@ class TestWarnDiscordSuppression(unittest.TestCase):
         os.environ.pop('DISCORD_ALERTS_WEBHOOK_URL', None)
         self._tmp.cleanup()
 
-    @patch('scripts.reddit_leads.http_post')
+    @patch('shared.http_post')
     def test_first_call_with_dedup_key_sends_and_records(self, mock_post):
         from scripts.reddit_leads import _warn_discord, _should_suppress_alert
         _warn_discord('hello', dedup_key='reddit_leads:k')
@@ -3288,7 +3288,7 @@ class TestWarnDiscordSuppression(unittest.TestCase):
         self.assertTrue(_should_suppress_alert(
             'reddit_leads:k', state_path=self.state_path))
 
-    @patch('scripts.reddit_leads.http_post')
+    @patch('shared.http_post')
     def test_second_call_within_window_is_suppressed(self, mock_post):
         from scripts.reddit_leads import _warn_discord
         _warn_discord('first', dedup_key='reddit_leads:k')
@@ -3296,14 +3296,14 @@ class TestWarnDiscordSuppression(unittest.TestCase):
         # Only the first call should have hit Discord.
         self.assertEqual(mock_post.call_count, 1)
 
-    @patch('scripts.reddit_leads.http_post')
+    @patch('shared.http_post')
     def test_no_dedup_key_never_suppresses(self, mock_post):
         from scripts.reddit_leads import _warn_discord
         _warn_discord('first')
         _warn_discord('second')
         self.assertEqual(mock_post.call_count, 2)
 
-    @patch('scripts.reddit_leads.http_post')
+    @patch('shared.http_post')
     def test_failed_send_does_not_record(self, mock_post):
         """A transient Discord 5xx must not record a 'sent' timestamp;
         otherwise the next alert would be silently suppressed even though

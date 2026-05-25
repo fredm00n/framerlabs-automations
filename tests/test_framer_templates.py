@@ -12,6 +12,7 @@ import urllib.error
 from unittest.mock import MagicMock, mock_open, patch, ANY
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
+import shared
 import framer_templates as ft
 
 # ---------------------------------------------------------------------------
@@ -2408,7 +2409,7 @@ class TestWarnDiscord(unittest.TestCase):
         os.environ.pop('DISCORD_ALERTS_WEBHOOK_URL', None)
 
     def test_posts_content_message_to_alerts_webhook(self):
-        with patch('framer_templates.http_post', return_value={}) as mock_post:
+        with patch('shared.http_post', return_value={}) as mock_post:
             ft._warn_discord('test warning message')
         mock_post.assert_called_once()
         url, payload = mock_post.call_args[0]
@@ -2418,20 +2419,20 @@ class TestWarnDiscord(unittest.TestCase):
 
     def test_uses_alerts_webhook_not_data_webhook(self):
         os.environ['DISCORD_WEBHOOK_URL_TEMPLATES'] = 'https://discord.com/api/webhooks/data'
-        with patch('framer_templates.http_post', return_value={}) as mock_post:
+        with patch('shared.http_post', return_value={}) as mock_post:
             ft._warn_discord('alert')
         posted_url = mock_post.call_args[0][0]
         self.assertIn('test-alerts', posted_url)
         self.assertNotIn('data', posted_url)
 
     def test_exception_is_caught_and_does_not_propagate(self):
-        with patch('framer_templates.http_post', side_effect=Exception('network error')):
+        with patch('shared.http_post', side_effect=Exception('network error')):
             ft._warn_discord('msg')  # must not raise
 
     def test_no_op_when_env_var_missing(self):
         """_warn_discord must not raise when DISCORD_ALERTS_WEBHOOK_URL is unset."""
         os.environ.pop('DISCORD_ALERTS_WEBHOOK_URL', None)
-        with patch('framer_templates.http_post') as mock_post:
+        with patch('shared.http_post') as mock_post:
             ft._warn_discord('msg')  # must not raise
         mock_post.assert_not_called()
 
@@ -2446,7 +2447,7 @@ class TestWarnDiscord(unittest.TestCase):
             'https://discord.com/api/webhooks/test-alerts',
             404, 'Not Found', {}, io.BytesIO(body),
         )
-        with patch('framer_templates.http_post', side_effect=http_err), \
+        with patch('shared.http_post', side_effect=http_err), \
              patch.object(el, 'log_error') as mock_log:
             ft._warn_discord('msg')  # must not raise
         self.assertTrue(mock_log.called)
@@ -2466,7 +2467,7 @@ class TestWarnDiscord(unittest.TestCase):
             'https://discord.com/api/webhooks/test-alerts',
             400, 'Bad Request', {}, io.BytesIO(body),
         )
-        with patch('framer_templates.http_post', side_effect=http_err), \
+        with patch('shared.http_post', side_effect=http_err), \
              patch.object(el, 'log_error') as mock_log:
             ft._warn_discord('msg')
         ctx = mock_log.call_args[0][3]
@@ -2968,7 +2969,7 @@ class TestWarnDiscordSuppression(unittest.TestCase):
         os.environ.pop('DISCORD_ALERTS_WEBHOOK_URL', None)
         self._tmp.cleanup()
 
-    @patch.object(ft, 'http_post')
+    @patch.object(shared, 'http_post')
     def test_first_call_with_dedup_key_sends_and_records(self, mock_post):
         ft._warn_discord('hello', dedup_key='framer_templates:k')
         mock_post.assert_called_once()
@@ -2976,20 +2977,20 @@ class TestWarnDiscordSuppression(unittest.TestCase):
         self.assertTrue(ft._should_suppress_alert(
             'framer_templates:k', state_path=self.state_path))
 
-    @patch.object(ft, 'http_post')
+    @patch.object(shared, 'http_post')
     def test_second_call_within_window_is_suppressed(self, mock_post):
         ft._warn_discord('first', dedup_key='framer_templates:k')
         ft._warn_discord('second', dedup_key='framer_templates:k')
         # Only the first call should have hit Discord.
         self.assertEqual(mock_post.call_count, 1)
 
-    @patch.object(ft, 'http_post')
+    @patch.object(shared, 'http_post')
     def test_no_dedup_key_never_suppresses(self, mock_post):
         ft._warn_discord('first')
         ft._warn_discord('second')
         self.assertEqual(mock_post.call_count, 2)
 
-    @patch.object(ft, 'http_post')
+    @patch.object(shared, 'http_post')
     def test_failed_send_does_not_record(self, mock_post):
         """A transient Discord 5xx must not record a 'sent' timestamp;
         otherwise the next alert would be silently suppressed even though
