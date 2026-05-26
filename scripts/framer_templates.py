@@ -26,6 +26,7 @@ from shared import (
     http_get,
     http_post,
     notion_headers,
+    is_valid_iso8601_date as _is_valid_iso8601_date,
     truncate_for_notion as _truncate_for_notion,
     warn_discord,
     write_summary as _write_summary,
@@ -515,8 +516,18 @@ def save_to_notion(template: dict) -> None:
         props['Demo URL'] = {'url': template['demo_url']}
     if template.get('remixes'):
         props['Remixes'] = {'number': template['remixes']}
-    if template.get('published_at'):
-        props['Published'] = {'date': {'start': template['published_at']}}
+    published_at = template.get('published_at', '')
+    if _is_valid_iso8601_date(published_at):
+        props['Published'] = {'date': {'start': published_at}}
+    elif published_at:
+        # Date present but unparseable — log a warning and omit the field so
+        # the template is still saved rather than causing a recurring Notion 400.
+        # Mirrors the same defensive guard in reddit_leads.save_lead_to_notion.
+        error_log.log_error(
+            'framer_templates', 'warning',
+            'Skipping invalid published_at for template',
+            {'slug': template.get('slug', ''), 'published_at': published_at},
+        )
     if template.get('thumbnail'):
         props['Thumbnail'] = {'url': template['thumbnail']}
     if template.get('author_slug'):

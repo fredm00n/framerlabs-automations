@@ -1148,6 +1148,38 @@ class TestSaveToNotion(unittest.TestCase):
         props = mock_post.call_args[0][1]['properties']
         self.assertNotIn('Published', props)
 
+    def test_excludes_published_when_malformed(self):
+        """A malformed published_at (e.g. residual $D prefix) must be omitted
+        to avoid a recurring Notion 400 that would prevent the template from
+        ever being saved."""
+        t = {**_BASE_TEMPLATE, 'published_at': '$D2024-01-15'}
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.save_to_notion(t)
+        props = mock_post.call_args[0][1]['properties']
+        self.assertNotIn('Published', props)
+
+    def test_malformed_published_at_logs_warning(self):
+        """A non-empty but unparseable published_at must log a warning with
+        the slug and raw value for diagnosis."""
+        import error_log as el
+        t = {**_BASE_TEMPLATE, 'slug': 'bad-date-slug', 'published_at': 'not-a-date'}
+        with patch('framer_templates.http_post', return_value={}), \
+             patch.object(el, 'log_error') as mock_log:
+            ft.save_to_notion(t)
+        self.assertTrue(mock_log.called)
+        ctx = mock_log.call_args[0][3]
+        self.assertEqual(ctx['slug'], 'bad-date-slug')
+        self.assertEqual(ctx['published_at'], 'not-a-date')
+
+    def test_valid_published_at_still_saved(self):
+        """A valid ISO 8601 published_at must still be saved to Notion."""
+        t = {**_BASE_TEMPLATE, 'published_at': '2024-01-15T10:00:00+00:00'}
+        with patch('framer_templates.http_post', return_value={}) as mock_post:
+            ft.save_to_notion(t)
+        props = mock_post.call_args[0][1]['properties']
+        self.assertIn('Published', props)
+        self.assertEqual(props['Published']['date']['start'], '2024-01-15T10:00:00+00:00')
+
     def test_400_with_thumbnail_retries_without_it(self):
         t = {**_BASE_TEMPLATE, 'thumbnail': 'https://example.com/t.jpg'}
         error = urllib.error.HTTPError(None, 400, 'Bad Request', {}, None)

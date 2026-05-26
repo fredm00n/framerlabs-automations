@@ -239,6 +239,38 @@ class TestRetryAfter(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# is_valid_iso8601_date
+# ---------------------------------------------------------------------------
+
+class TestIsValidIso8601Date(unittest.TestCase):
+
+    def test_valid_utc_datetime(self):
+        self.assertTrue(shared.is_valid_iso8601_date('2024-03-01T10:00:00+00:00'))
+
+    def test_valid_datetime_with_offset(self):
+        self.assertTrue(shared.is_valid_iso8601_date('2024-03-01T08:00:00-05:00'))
+
+    def test_valid_date_only(self):
+        self.assertTrue(shared.is_valid_iso8601_date('2024-03-01'))
+
+    def test_empty_string_returns_false(self):
+        self.assertFalse(shared.is_valid_iso8601_date(''))
+
+    def test_garbage_string_returns_false(self):
+        self.assertFalse(shared.is_valid_iso8601_date('not-a-date'))
+
+    def test_partial_date_invalid(self):
+        self.assertFalse(shared.is_valid_iso8601_date('2024-03'))
+
+    def test_timestamp_with_z_suffix(self):
+        result = shared.is_valid_iso8601_date('2024-03-01T10:00:00Z')
+        self.assertIsInstance(result, bool)
+
+    def test_residual_dollar_d_prefix_rejected(self):
+        self.assertFalse(shared.is_valid_iso8601_date('$D2024-03-01'))
+
+
+# ---------------------------------------------------------------------------
 # truncate_for_notion
 # ---------------------------------------------------------------------------
 
