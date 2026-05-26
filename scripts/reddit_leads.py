@@ -29,6 +29,7 @@ from shared import (
     _RETRY_AFTER_MAX_SECONDS,
     http_post,
     notion_headers,
+    is_valid_iso8601_date as _is_valid_iso8601_date,
     truncate_for_notion as _truncate_for_notion,
     warn_discord,
     write_summary as _write_summary,
@@ -351,20 +352,6 @@ def url_exists_in_notion(url: str, db_id: str) -> bool:
         headers=notion_headers(),
     )
     return len(data.get('results', [])) > 0
-
-
-def _is_valid_iso8601_date(value: str) -> bool:
-    """Return True if *value* is a non-empty string that Python can parse as an
-    ISO 8601 datetime.  Notion's date API field requires a valid ISO 8601 string;
-    a malformed value causes an HTTP 400 that will recur on every subsequent run
-    because the page is never created and dedup never triggers."""
-    if not value:
-        return False
-    try:
-        datetime.fromisoformat(value)
-        return True
-    except (ValueError, TypeError):
-        return False
 
 
 def save_lead_to_notion(lead: dict, db_id: str) -> None:
