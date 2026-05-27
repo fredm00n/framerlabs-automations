@@ -2361,6 +2361,79 @@ class TestMainWritesSummary(unittest.TestCase):
         self.assertIn('1 new template', summary_text)
         self.assertIn('already tracked', summary_text)
 
+    def test_summary_reports_partial_failure_count(self):
+        """When some saves fail, summary must report saved/total and mention failures."""
+        templates = [
+            {'slug': f's{i}', 'title': f'T{i}', 'url': f'u{i}', 'author': 'A',
+             'author_slug': '', 'price': 'Free', 'thumbnail': '', 'published_at': ''}
+            for i in range(4)
+        ]
+        # First 2 succeed, then 2 fail (below short-circuit threshold of 3)
+        save_mock = MagicMock(side_effect=[None, None, Exception('err'), Exception('err')])
+        with patch.dict('os.environ', {'NOTION_TOKEN': 'ntn_x', 'NOTION_DATABASE_ID': 'db',
+                                       'DISCORD_WEBHOOK_URL_TEMPLATES': 'https://h.com/w'}), \
+             patch('framer_templates.fetch_framer_templates', return_value=templates), \
+             patch('framer_templates.get_seen_slugs', return_value={'existing'}), \
+             patch('framer_templates._warn_discord'), \
+             patch('framer_templates.save_to_notion', save_mock), \
+             patch('framer_templates.notify_discord_batch'), \
+             patch('framer_templates.post_to_x'), \
+             patch('framer_templates._write_summary') as mock_summary, \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            ft.main()
+        mock_summary.assert_called_once()
+        summary_text = mock_summary.call_args[0][0]
+        self.assertIn('2/4', summary_text)
+        self.assertIn('failed', summary_text)
+
+    def test_summary_reports_short_circuit_failure_count(self):
+        """When save loop short-circuits, summary must report saved/total and mention failures."""
+        templates = [
+            {'slug': f's{i}', 'title': f'T{i}', 'url': f'u{i}', 'author': 'A',
+             'author_slug': '', 'price': 'Free', 'thumbnail': '', 'published_at': ''}
+            for i in range(10)
+        ]
+        # All saves fail → short-circuit after 3
+        save_mock = MagicMock(side_effect=Exception('Notion down'))
+        with patch.dict('os.environ', {'NOTION_TOKEN': 'ntn_x', 'NOTION_DATABASE_ID': 'db',
+                                       'DISCORD_WEBHOOK_URL_TEMPLATES': 'https://h.com/w'}), \
+             patch('framer_templates.fetch_framer_templates', return_value=templates), \
+             patch('framer_templates.get_seen_slugs', return_value={'existing'}), \
+             patch('framer_templates._warn_discord'), \
+             patch('framer_templates.save_to_notion', save_mock), \
+             patch('framer_templates.notify_discord_batch'), \
+             patch('framer_templates.post_to_x'), \
+             patch('framer_templates._write_summary') as mock_summary, \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            ft.main()
+        mock_summary.assert_called_once()
+        summary_text = mock_summary.call_args[0][0]
+        self.assertIn('0/10', summary_text)
+        self.assertIn('failed', summary_text)
+
+    def test_print_reports_saved_count_not_new_count(self):
+        """Print output must use saved_templates count, not new_templates count."""
+        templates = [
+            {'slug': f's{i}', 'title': f'T{i}', 'url': f'u{i}', 'author': 'A',
+             'author_slug': '', 'price': 'Free', 'thumbnail': '', 'published_at': ''}
+            for i in range(3)
+        ]
+        # All saves succeed
+        with patch.dict('os.environ', {'NOTION_TOKEN': 'ntn_x', 'NOTION_DATABASE_ID': 'db',
+                                       'DISCORD_WEBHOOK_URL_TEMPLATES': 'https://h.com/w'}), \
+             patch('framer_templates.fetch_framer_templates', return_value=templates), \
+             patch('framer_templates.get_seen_slugs', return_value={'existing'}), \
+             patch('framer_templates._warn_discord'), \
+             patch('framer_templates.save_to_notion'), \
+             patch('framer_templates.notify_discord_batch'), \
+             patch('framer_templates.post_to_x'), \
+             patch('framer_templates._write_summary'), \
+             patch('builtins.print') as mock_print, \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            ft.main()
+        output = ' '.join(str(c) for c in mock_print.call_args_list)
+        self.assertIn('Notified 3 template(s)', output)
+
 
 # ---------------------------------------------------------------------------
 # _build_tweet_text

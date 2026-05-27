@@ -88,7 +88,7 @@ Tests live in `tests/` and use Python's built-in `unittest` — no install step 
 python3 -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-GitHub Actions runs this automatically on every push and pull request (see `.github/workflows/tests.yml`). A PR with failing CI must not be merged.
+GitHub Actions runs this automatically on every pull request (see `.github/workflows/tests.yml`). A PR with failing CI must not be merged.
 
 **Maintenance rules — apply to every PR, no exceptions:**
 

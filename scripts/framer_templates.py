@@ -1128,12 +1128,19 @@ def main() -> None:
         notify_discord_batch(saved_templates)
         post_to_x(saved_templates)
 
-    verb = 'Seeded' if is_first_run else 'Notified'
-    print(f'Done. {verb} {len(new_templates)} template(s).')
     if is_first_run:
-        _write_summary(f'## Framer Monitor\n🌱 First run — seeded {len(new_templates)} template(s) silently')
+        print(f'Done. Seeded {len(saved_templates)} template(s).')
+        _write_summary(f'## Framer Monitor\n🌱 First run — seeded {len(saved_templates)} template(s) silently')
+    elif save_short_circuited or len(saved_templates) < len(new_templates):
+        failed = len(new_templates) - len(saved_templates)
+        print(f'Done. Saved {len(saved_templates)}/{len(new_templates)} template(s) ({failed} failed).')
+        _write_summary(
+            f'## Framer Monitor\n⚠️ {len(saved_templates)}/{len(new_templates)} new template(s) saved'
+            f' ({failed} failed) · {len(seen_slugs)} already tracked'
+        )
     else:
-        _write_summary(f'## Framer Monitor\n✨ {len(new_templates)} new template(s) found · {len(seen_slugs)} already tracked')
+        print(f'Done. Notified {len(saved_templates)} template(s).')
+        _write_summary(f'## Framer Monitor\n✨ {len(saved_templates)} new template(s) found · {len(seen_slugs)} already tracked')
 
 
 if __name__ == '__main__':
