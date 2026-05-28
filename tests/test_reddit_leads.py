@@ -10,17 +10,23 @@ from unittest.mock import MagicMock, call, patch
 
 sys.path.insert(0, '.')
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts'))
+import ssl
+
 from scripts.reddit_leads import (
     _ALWAYS_EXCLUDE_WORD_START_PHRASES,
+    _SSL_CTX,
     _VALID_STATUSES,
     _clean_html,
     _has_word_start_phrase,
     _is_valid_iso8601_date,
+    _ssl_context_for,
     cli,
     fetch_reddit_posts,
     get_lead_by_id,
     get_pending_leads,
     get_unnotified_approved_leads,
+    http_get,
+    http_patch,
     mark_notified,
     notify_discord_lead,
     passes_light_filter,
@@ -364,6 +370,64 @@ class TestPassesLightFilter(unittest.TestCase):
         self.assertFalse(passes_light_filter(
             'Hiring web designer', 'Need a website built', 'unknownsub'
         ))
+
+
+# ---------------------------------------------------------------------------
+# TestSSLContextSelection
+#
+# SSL certificate verification must be disabled *only* for Reddit RSS fetches
+# (the scheduler VM cannot validate Reddit's cert chain).  Calls to the Notion
+# API — which carry the NOTION_TOKEN Bearer credential — must keep default TLS
+# verification, matching the shared ``http_post`` Notion calls.  These tests
+# pin that per-host routing so the cert bypass cannot silently widen again.
+# ---------------------------------------------------------------------------
+
+class TestSSLContextSelection(unittest.TestCase):
+
+    def test_reddit_rss_url_uses_bypass_context(self):
+        self.assertIs(
+            _ssl_context_for('https://www.reddit.com/r/forhire/.rss'), _SSL_CTX
+        )
+
+    def test_bare_reddit_host_uses_bypass_context(self):
+        self.assertIs(_ssl_context_for('https://reddit.com/r/framer/.rss'), _SSL_CTX)
+
+    def test_notion_pages_url_uses_default_verification(self):
+        self.assertIsNone(_ssl_context_for('https://api.notion.com/v1/pages/abc'))
+
+    def test_notion_query_url_uses_default_verification(self):
+        self.assertIsNone(
+            _ssl_context_for('https://api.notion.com/v1/databases/xyz/query')
+        )
+
+    def test_lookalike_host_does_not_match(self):
+        # A host that merely ends in the string "reddit.com" without a dot
+        # boundary (e.g. an attacker-controlled "notreddit.com") must not get
+        # the bypass — endswith('.reddit.com') guards against this.
+        self.assertIsNone(_ssl_context_for('https://notreddit.com/r/forhire/.rss'))
+
+    def test_ssl_ctx_disables_verification(self):
+        # Sanity-check the bypass context itself is configured as intended.
+        self.assertEqual(_SSL_CTX.verify_mode, ssl.CERT_NONE)
+        self.assertFalse(_SSL_CTX.check_hostname)
+
+    @patch('scripts.reddit_leads._shared_http_get')
+    def test_http_get_passes_bypass_for_reddit(self, mock_shared_get):
+        mock_shared_get.return_value = '<feed/>'
+        http_get('https://www.reddit.com/r/forhire/.rss')
+        self.assertIs(mock_shared_get.call_args.kwargs['ssl_context'], _SSL_CTX)
+
+    @patch('scripts.reddit_leads._shared_http_get')
+    def test_http_get_passes_default_verify_for_notion(self, mock_shared_get):
+        mock_shared_get.return_value = '{}'
+        http_get('https://api.notion.com/v1/pages/abc')
+        self.assertIsNone(mock_shared_get.call_args.kwargs['ssl_context'])
+
+    @patch('scripts.reddit_leads._shared_http_patch')
+    def test_http_patch_passes_default_verify_for_notion(self, mock_shared_patch):
+        mock_shared_patch.return_value = {}
+        http_patch('https://api.notion.com/v1/pages/abc', {'properties': {}})
+        self.assertIsNone(mock_shared_patch.call_args.kwargs['ssl_context'])
 
 
 # ---------------------------------------------------------------------------

@@ -14,8 +14,7 @@ and be implemented.
   occurrence — does not meet the recurrence threshold.
 
 - **2026-05-27** — reddit_leads.py routes Notion PATCH/GET calls through the
-  Reddit-specific SSL-bypass wrapper (ssl.CERT_NONE). `get_lead_by_id`,
-  `update_lead_status`, and `mark_notified` all hit Notion with certificate
-  verification disabled. Functionally harmless (Notion uses well-known certs)
-  but unnecessarily broadens the SSL bypass beyond its original Reddit RSS
-  scope. No errors observed, no data loss.
+  Reddit-specific SSL-bypass wrapper (ssl.CERT_NONE). _Resolved 2026-05-28:_
+  the local `http_get`/`http_patch` wrappers now pick the SSL context per host
+  (`_ssl_context_for`), applying the cert bypass only to `reddit.com` URLs so
+  Notion calls keep default TLS verification. See deferred_improvements.md.
