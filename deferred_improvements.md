@@ -65,3 +65,4 @@
 - Generalised dedup-failure short-circuit (3 consecutive failures)
 - Notion preflight check before feed loop
 - Cross-run alert suppression via `state/alert_state-reddit_leads.json`
+- Per-host SSL context selection (`_ssl_context_for`) — the cert-verification bypass (`ssl.CERT_NONE`) is now applied only to `reddit.com` RSS fetches, which the scheduler VM cannot validate. Notion API calls (`get_lead_by_id`, `update_lead_status`, `mark_notified`) keep default TLS verification, so the `NOTION_TOKEN` Bearer credential and lead data are no longer exposed over an unverified connection. Previously the local `http_get`/`http_patch` wrappers applied the bypass unconditionally, inconsistent with the shared `http_post` Notion calls which already verified.

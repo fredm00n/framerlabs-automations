@@ -17,6 +17,7 @@ import ssl
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -193,7 +194,16 @@ def passes_light_filter(title: str, content: str, subreddit: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# HTTP helpers (Reddit-specific: SSL verification disabled for RSS feeds)
+# HTTP helpers
+#
+# SSL certificate verification is disabled *only* for Reddit RSS fetches — the
+# scheduler VM cannot validate Reddit's certificate chain, so the RSS feeds
+# would otherwise be unreachable.  Calls to other hosts (notably the Notion API,
+# which carries the ``NOTION_TOKEN`` Bearer credential) must keep default
+# verification: those hosts use well-known certificates, so bypassing TLS there
+# would needlessly expose the token and lead data to MITM tampering.  The local
+# ``http_post`` (imported from ``shared``) already verifies Notion, so applying
+# the bypass per-host keeps the three GET/PATCH Notion calls consistent with it.
 # ---------------------------------------------------------------------------
 
 _SSL_CTX = ssl.create_default_context()
@@ -203,16 +213,24 @@ _SSL_CTX.verify_mode = ssl.CERT_NONE
 from shared import http_get as _shared_http_get, http_patch as _shared_http_patch
 
 
+def _ssl_context_for(url: str):
+    """Return the cert-bypass context for Reddit URLs, else None (default verify)."""
+    host = urllib.parse.urlsplit(url).hostname or ''
+    if host == 'reddit.com' or host.endswith('.reddit.com'):
+        return _SSL_CTX
+    return None
+
+
 def http_get(url: str, headers: dict | None = None) -> str:
     return _shared_http_get(
         url,
         headers={'User-Agent': _REDDIT_USER_AGENT, **(headers or {})},
-        ssl_context=_SSL_CTX,
+        ssl_context=_ssl_context_for(url),
     )
 
 
 def http_patch(url: str, data: dict, headers: dict | None = None) -> dict:
-    return _shared_http_patch(url, data, headers=headers, ssl_context=_SSL_CTX)
+    return _shared_http_patch(url, data, headers=headers, ssl_context=_ssl_context_for(url))
 
 
 # ---------------------------------------------------------------------------
