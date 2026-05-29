@@ -53,18 +53,35 @@ If the output is an empty array `[]`, there is nothing to review — exit cleanl
 
 For each lead, read the title and content carefully and decide: **approve** or **reject**.
 
-**Approve** if the post clearly shows someone wanting to hire a web designer/developer:
-- They are looking to pay someone to build, redesign, fix, or maintain a website or Framer project
-- There is clear intent to hire (not just curiosity or discussion)
-- The work could realistically be done in Framer (websites, landing pages, portfolios, marketing sites)
+This feeds a public Discord with hundreds of members. A wrong lead erodes their
+trust in the tool far more than a missed one costs. So the bar is **precision over
+recall: when in doubt, reject.**
 
-**Reject** if:
-- The person is advertising their own services (job seeker, not client)
-- They are asking for feedback, critique, or opinions on existing work
-- It is a tutorial, learning question, or general discussion
-- It is a complaint, rant, or pricing question about a tool
-- They want to hire but for something unrelated to web/Framer work (e.g., logo design only, mobile app, backend)
-- The post is too vague to act on
+**The Framer-fit test (the core question).** Approve only if the job is the kind of
+work a Framer designer would actually take: building, redesigning, fixing, or
+maintaining a **design-led marketing-style website** — landing pages, portfolios,
+marketing/brand sites, simple business sites — that could realistically be built in
+Framer or a comparable no-code/design tool. There must also be clear intent to
+**hire and pay** (not curiosity, discussion, or someone advertising themselves).
+
+**Reject** if any of these apply:
+- The person is advertising their own services (job seeker, not client).
+- They are asking for feedback, critique, or opinions on existing work.
+- It is a tutorial, learning question, or general discussion.
+- It is a complaint, rant, or pricing question about a tool.
+- The post is too vague to act on.
+- **It is a software-engineering role, not design-led site work.** This is the
+  most common false positive — reject requests that ask for a specific code stack
+  or app-development skillset even though they're "web": React, Next.js, Vue,
+  full-stack, backend/API, databases, web apps, dashboards, SaaS application
+  frontends with real product logic, Shopify/WordPress dev, mobile/iOS/Android.
+  These are not Framer jobs. (Example to reject: *"Looking for a React/Next.js dev
+  to build out our app"* — that's engineering, not Framer design work.)
+- The deliverable is something other than a website: logo/branding only,
+  graphic design, copywriting, marketing/ads management, SEO-only, etc.
+
+If a post mixes signals (e.g. "designer who can also code a Next.js app"), lean
+toward **reject** unless the primary, clearly-stated need is a Framer-style site.
 
 ---
 
@@ -82,6 +99,7 @@ Example reasons (approved leads appear in Discord — make them explanatory, 1-2
 - `"Agency looking for a long-term web dev partner for full website builds — clear intent to pay for ongoing work"`
 - `"Asking for feedback on existing site, not hiring"`
 - `"Job seeker advertising services"`
+- `"Hiring a React/Next.js dev to build an app — software engineering, not Framer design work"`
 
 ---
 
