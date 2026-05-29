@@ -10,11 +10,12 @@
 ### Still deferred (not yet implemented)
 
 - **RSC format fragility** — Framer's RSC payload is an internal Next.js mechanism that could change without notice. When parsing yields < 5 templates, alerts and diagnostics fire. The script already tries fallback keys and scans for candidate keys, but a completely new encoding (e.g. pure flight-format with no inline JSON) would require manual intervention.
-- **Category inference accuracy** — keyword matching may miscategorise edge cases; an LLM-based approach could be added if accuracy matters. The inferred category is persisted to Notion so miscategorisations are visible and correctable.
+- **Category inference accuracy** — keyword matching may still miscategorise genuinely ambiguous titles (a title containing keywords from multiple categories resolves by `CATEGORY_KEYWORDS` order). An LLM-based approach could be added if accuracy matters. The inferred category is persisted to Notion so miscategorisations are visible and correctable. _Substring false positives resolved 2026-05-29 — see Implemented below._
 - **Additional `CATEGORY_KEYWORDS` entries** (e.g. `event`, `wedding`, `fintech`) could reduce "Other" categorisations; skipped as new entries need validation against real Framer templates.
 
 ### Implemented (context for future reference)
 
+- Whole-word category keyword matching (`infer_category`) — keywords are now precompiled into `\b`-anchored regexes (`_compile_category_patterns` / `_CATEGORY_PATTERNS`) instead of naive substring `in` checks. Short keywords like `'ai'` and `'app'` were matching inside unrelated words ("ret**ai**l", "em**ai**l", "h**app**y", "wr**app**er"), silently filing e.g. a "Retail Store" template under "SaaS & Tech" — the wrong category was persisted to the Notion `Category` select and shown under the wrong heading in the Discord/X recap. Multi-word and punctuation keywords (`'real estate'`, `'e-commerce'`, `'bar & grill'`, `'coming soon'`, `'non-profit'`) and the first-match-wins ordering are unchanged. Mirrors the word-boundary fix already used by `_has_word_start_phrase` in `reddit_leads.py`.
 - RSC fallback key detection and `_find_candidate_rsc_keys` diagnostic
 - `_sample_rsc_line_prefixes` for flight-format diagnosis
 - HTTP error response body capture on Notion saves, Twitter posts, Discord webhooks

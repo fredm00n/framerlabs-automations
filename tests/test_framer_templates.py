@@ -1004,6 +1004,39 @@ class TestInferCategory(unittest.TestCase):
     def test_multi_word_keyword(self):
         self.assertEqual(ft.infer_category(_template(title='Luxury Real Estate')), 'Real Estate')
 
+    def test_short_keyword_ai_not_matched_inside_word(self):
+        # 'ai' must not match inside 'retail' — a retail store is E-commerce,
+        # not SaaS & Tech (the category that owns the 'ai' keyword).
+        self.assertEqual(ft.infer_category(_template(title='Retail Store Template')), 'E-commerce & Retail')
+
+    def test_short_keyword_ai_not_matched_inside_email(self):
+        # 'ai' must not match inside 'email'.
+        self.assertEqual(ft.infer_category(_template(title='Email Marketing Landing')), 'Agency')
+
+    def test_short_keyword_app_not_matched_inside_word(self):
+        # 'app' must not match inside 'happy'/'wrapper' — a shop is E-commerce.
+        self.assertEqual(ft.infer_category(_template(title='Happy Wrapper Shop')), 'E-commerce & Retail')
+
+    def test_standalone_ai_still_matches(self):
+        # A genuine standalone 'AI' product is still SaaS & Tech.
+        self.assertEqual(ft.infer_category(_template(title='AI Dashboard Platform')), 'SaaS & Tech')
+
+    def test_standalone_app_still_matches(self):
+        # A genuine standalone 'App' is still SaaS & Tech.
+        self.assertEqual(ft.infer_category(_template(title='App Builder')), 'SaaS & Tech')
+
+    def test_punctuation_keyword_ecommerce_matches(self):
+        # Keywords containing punctuation ('e-commerce') keep working.
+        self.assertEqual(ft.infer_category(_template(title='E-commerce Boutique')), 'E-commerce & Retail')
+
+    def test_punctuation_keyword_bar_and_grill_matches(self):
+        # Keywords with spaces and '&' ('bar & grill') keep working.
+        self.assertEqual(ft.infer_category(_template(title='Downtown Bar & Grill House')), 'Food & Dining')
+
+    def test_multi_word_landing_keyword_matches(self):
+        # Multi-word keyword 'coming soon' keeps working.
+        self.assertEqual(ft.infer_category(_template(title='Coming Soon Page')), 'Landing Page')
+
 
 class TestGroupByCategory(unittest.TestCase):
 

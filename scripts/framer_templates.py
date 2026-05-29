@@ -448,12 +448,43 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
 }
 
 
+def _compile_category_patterns(
+    keywords_by_category: dict[str, list[str]],
+) -> dict[str, list[re.Pattern]]:
+    """Precompile a word-boundary regex for each category keyword.
+
+    Plain substring matching produces false positives on short keywords:
+    ``'ai'`` matches inside "ret**ai**l" and "em**ai**l", and ``'app'``
+    matches inside "h**app**y" and "wr**app**er", silently miscategorising
+    templates (e.g. a "Retail Store" template would be filed under
+    "SaaS & Tech"). Anchoring each keyword with ``\\b`` requires it to appear
+    as a whole word/phrase. Multi-word keywords such as ``'real estate'`` and
+    keywords containing punctuation such as ``'e-commerce'`` keep working
+    because ``\\b`` sits at the alphanumeric edges. Mirrors the word-boundary
+    approach used by ``_has_word_start_phrase`` in ``reddit_leads.py``.
+    """
+    compiled: dict[str, list[re.Pattern]] = {}
+    for category, keywords in keywords_by_category.items():
+        compiled[category] = [
+            re.compile(r'\b' + re.escape(kw) + r'\b') for kw in keywords
+        ]
+    return compiled
+
+
+_CATEGORY_PATTERNS: dict[str, list[re.Pattern]] = _compile_category_patterns(CATEGORY_KEYWORDS)
+
+
 def infer_category(template: dict) -> str:
-    """Infer a category from the template's title and meta_title via keyword matching."""
+    """Infer a category from the template's title and meta_title via keyword matching.
+
+    Keywords are matched as whole words (``\\b`` anchored) so short keywords
+    like ``'ai'`` and ``'app'`` do not match inside unrelated words such as
+    "retail", "email", or "wrapper".
+    """
     text = (template.get('title', '') + ' ' + template.get('meta_title', '')).lower()
-    for category, keywords in CATEGORY_KEYWORDS.items():
-        for keyword in keywords:
-            if keyword in text:
+    for category, patterns in _CATEGORY_PATTERNS.items():
+        for pattern in patterns:
+            if pattern.search(text):
                 return category
     return 'Other'
 
