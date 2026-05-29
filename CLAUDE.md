@@ -107,14 +107,14 @@ Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort
 - **Source:** Framer's Next.js RSC endpoint — fetched directly with `Rsc: 1` header, returns structured component data including all templates sorted by recent (no headless browser needed)
 - **State:** Notion DB `Framer Templates` (ID in `NOTION_DATABASE_ID`)
 - **Notifications:** Discord one detail embed per template followed by a grouped summary embed (by category) at the end of the batch, so the recap sits at the bottom of the channel as a quick index; optionally posts to X/Twitter (skipped if credentials not set)
-- **Category inference:** categories are inferred from template title/meta_title via keyword matching (e.g. "Restaurant" → Food & Dining, "SaaS" → SaaS & Tech). Categories are not available in the Framer RSC payload. The inferred category is stored as a `select` field in Notion.
+- **Category inference:** categories are inferred from template title/meta_title via keyword matching (e.g. "Restaurant" → Food & Dining, "SaaS" → SaaS & Tech). Keywords are matched as whole words (`\b`-anchored, precompiled regexes) so short keywords like `'ai'` and `'app'` don't match inside unrelated words (e.g. "retail", "email", "wrapper"). Categories are not available in the Framer RSC payload. The inferred category is stored as a `select` field in Notion.
 - **First run:** seeds the DB silently — no Discord/X notifications
 - **Fields tracked:** title, slug, URL, author, author URL, price, category, discovered datetime, published datetime
 - **Pagination:** fetches up to 2 pages (40 templates) per run; pages are cumulative (`?page=N` returns items 1–N×20), stops early when a page yields fewer than 20 new items
 
 **Deferred improvements** (still open):
 - RSC format fragility — Framer could change the response structure without notice; fallback keys and diagnostics exist but a completely new encoding would need manual intervention
-- Category inference accuracy — keyword matching may miscategorise edge cases; LLM-based approach could help
+- Category inference accuracy — whole-word keyword matching now avoids substring false positives, but legitimate ambiguity (a title matching multiple categories) still resolves by `CATEGORY_KEYWORDS` order; an LLM-based approach could help
 - Additional `CATEGORY_KEYWORDS` entries — could reduce "Other" categorisations
 
 See [deferred_improvements.md](./deferred_improvements.md) for full historical context on all implemented and deferred items.
