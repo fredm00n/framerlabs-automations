@@ -23,6 +23,7 @@ jobs:
           DISCORD_ALERTS_WEBHOOK_URL: ${{ secrets.DISCORD_ALERTS_WEBHOOK_URL }}
         run: python3 scripts/reddit_leads.py
       - name: Commit error log
+        if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -44,6 +45,10 @@ jobs:
           # run, which is how the 2026-05-21 incident evidence disappeared
           # from logs/errors.jsonl entirely.
           for attempt in 1 2 3 4 5; do
+            # Abort any rebase left in progress by a prior failed attempt —
+            # otherwise the next `git pull --rebase` aborts immediately with
+            # "a rebase is in progress", dooming every remaining retry.
+            git rebase --abort 2>/dev/null || true
             if git pull --rebase origin main && git push; then
               exit 0
             fi

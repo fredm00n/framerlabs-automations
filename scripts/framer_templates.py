@@ -28,6 +28,7 @@ from shared import (
     notion_headers,
     is_valid_iso8601_date as _is_valid_iso8601_date,
     truncate_for_notion as _truncate_for_notion,
+    side_effects_enabled,
     warn_discord,
     write_summary as _write_summary,
     should_suppress_alert as _should_suppress_alert,
@@ -532,6 +533,9 @@ def get_seen_slugs() -> set[str]:
 
 
 def save_to_notion(template: dict) -> None:
+    if not side_effects_enabled():
+        print(f'[observe-only] would save template to Notion: {template.get("slug", "")}')
+        return
     props: dict = {
         'Name': {'title': [{'text': {'content': _truncate_for_notion(template['title'])}}]},
         'Slug': {'rich_text': [{'text': {'content': _truncate_for_notion(template['slug'])}}]},
@@ -789,6 +793,9 @@ def notify_discord_batch(templates: list[dict]) -> None:
     """
     if not templates:
         return
+    if not side_effects_enabled():
+        print(f'[observe-only] would post {len(templates)} template(s) to Discord')
+        return
     embeds = [_build_embed(t) for t in templates]
     payloads: list[dict] = [{'embeds': [embed]} for embed in embeds]
     payloads.append({'embeds': [_build_summary_embed(templates)]})
@@ -934,6 +941,9 @@ def _build_tweet_text(templates: list[dict]) -> str:
 
 def post_to_x(templates: list[dict]) -> None:
     """Post a tweet about new templates. No-op if Twitter credentials are not configured."""
+    if not side_effects_enabled():
+        print(f'[observe-only] would post {len(templates)} template(s) to X')
+        return
     creds = {k: os.environ.get(k, '') for k in _TWITTER_CRED_KEYS}
     if not all(creds.values()):
         print('Twitter credentials not configured -- skipping X post.')

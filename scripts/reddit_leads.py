@@ -32,6 +32,7 @@ from shared import (
     notion_headers,
     is_valid_iso8601_date as _is_valid_iso8601_date,
     truncate_for_notion as _truncate_for_notion,
+    side_effects_enabled,
     warn_discord,
     write_summary as _write_summary,
     should_suppress_alert as _should_suppress_alert,
@@ -374,6 +375,9 @@ def url_exists_in_notion(url: str, db_id: str) -> bool:
 
 def save_lead_to_notion(lead: dict, db_id: str) -> None:
     """Save a new lead to Notion with status 'pending'."""
+    if not side_effects_enabled():
+        print(f'[observe-only] would save lead to Notion: {lead.get("url", "")}')
+        return
     props: dict = {
         'Name': {'title': [{'text': {'content': _truncate_for_notion(lead['title'])}}]},
         'URL': {'url': lead['url']},
@@ -408,6 +412,9 @@ def save_failed_sentinel_to_notion(lead: dict, db_id: str) -> None:
     RSS feed.  The sentinel only stores the URL and a 'failed' status — no title
     or content that might have triggered the original error.
     """
+    if not side_effects_enabled():
+        print(f'[observe-only] would write failed sentinel to Notion: {lead.get("url", "")}')
+        return
     try:
         http_post(
             'https://api.notion.com/v1/pages',

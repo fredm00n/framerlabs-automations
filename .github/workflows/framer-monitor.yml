@@ -27,6 +27,7 @@ jobs:
           TWITTER_ACCESS_TOKEN_SECRET: ${{ secrets.TWITTER_ACCESS_TOKEN_SECRET }}
         run: python3 scripts/framer_templates.py
       - name: Commit error log and alert state
+        if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -47,6 +48,10 @@ jobs:
           # without retry a lost race silently drops the log entries from
           # the losing run.
           for attempt in 1 2 3 4 5; do
+            # Abort any rebase left in progress by a prior failed attempt —
+            # otherwise the next `git pull --rebase` aborts immediately with
+            # "a rebase is in progress", dooming every remaining retry.
+            git rebase --abort 2>/dev/null || true
             if git pull --rebase origin main && git push; then
               exit 0
             fi

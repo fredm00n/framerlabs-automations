@@ -30,6 +30,20 @@ Scripts are written in **Python 3** (stdlib only, no pip dependencies).
 Shared utilities (HTTP retry, Notion helpers, alert suppression, dotenv) live in `scripts/shared.py` — both scripts import from it.
 Node.js is available but has no DNS access in the scheduler VM — do not use it for network calls.
 
+### Side-effect gating
+The monitoring scripts run in two places: the production GitHub Actions cron and
+the self-improvement cloud routine (which runs them to observe behaviour while
+developing changes). **External side effects — Notion writes, Discord posts, and
+tweets — only happen when `GITHUB_ACTIONS=true` (set automatically by Actions) or
+`ENABLE_SIDE_EFFECTS=1` is set.** Any other run (a cloud VM, a local checkout) is
+observe-only: it still fetches and reads, and prints `[observe-only] would …`
+lines so an agent can see what *would* happen, but it never writes to the
+production Notion DB or posts to the public Discord channels. This is enforced by
+`shared.side_effects_enabled()`, checked inside `warn_discord` and every Notion-write
+/ notification function in `main()`. The hourly reviewer's CLI commands
+(`--update-status`, `--notify`) are deliberately **not** gated — they are explicit
+operator actions that must work from the reviewer's runtime.
+
 ### State persistence
 Each script uses a **Notion database** to track state between runs.
 The Notion REST API is called directly (Bearer token auth) — no MCP, no ORM.
@@ -43,12 +57,16 @@ Never log or echo secret values.
 ### Error logging
 Scripts append structured errors to `logs/errors.jsonl` (one JSON object per line).
 Each entry has: `timestamp` (ISO 8601 UTC), `script` name, `severity` (`warning` or `error`),
-`message`, and optional `context` dict. GitHub Actions commits this file after each run,
-using exponential-backoff push retries (2s → 4s → 8s → 16s → 32s, up to 5 attempts) so a
-race with the parallel workflow's push cannot silently drop the run's log entries.
+`message`, and optional `context` dict. GitHub Actions commits this file after each run.
+The commit step runs with `if: always()` so a non-zero script exit (e.g. a Notion
+`SystemExit`) still persists the very errors that caused it. Pushes use exponential-backoff
+retries (2s → 4s → 8s → 16s → 32s, up to 5 attempts); each attempt first runs
+`git rebase --abort` so a rebase left in progress by a failed attempt cannot doom the rest.
+Both guard against a race with the parallel workflow's push silently dropping log entries.
 The Tier 2a self-improvement session reads it locally (via `git pull`) to identify recurring
 issues and propose fixes. Critical errors are also sent to `DISCORD_ALERTS_WEBHOOK_URL`
-for immediate visibility.
+for immediate visibility (only from the production cron — sandbox runs are observe-only,
+see Side-effect gating above).
 
 Log rotation: the self-improvement session removes entries older than 7 days after reading
 them, then commits the trimmed file.
