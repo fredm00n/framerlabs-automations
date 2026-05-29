@@ -74,7 +74,7 @@ them, then commits the trimmed file.
 ### Alert state
 Cross-run Discord alert suppression is persisted in script-specific files under `state/`
 (e.g. `state/alert_state-reddit_leads.json`), committed alongside `logs/errors.jsonl`.
-Each file maps a stable alert key (e.g. `reddit_leads:dedup_object_not_found`) to the
+Each file maps a stable alert key (e.g. `reddit_leads:dedup_notion_likely_down`) to the
 ISO 8601 timestamp of the last successful send. `_warn_discord(message, dedup_key=...)`
 checks this state before posting and skips the alert if the same key was sent within
 `_ALERT_SUPPRESS_MINUTES` (60 min). Per-script paths avoid `git push` races between
