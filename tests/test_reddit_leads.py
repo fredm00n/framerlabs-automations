@@ -12,6 +12,11 @@ sys.path.insert(0, '.')
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts'))
 import ssl
 
+# Exercise the production side-effect paths (Notion writes enabled) regardless
+# of where the suite runs. The observe-only gate has dedicated tests that
+# override this explicitly.
+os.environ['ENABLE_SIDE_EFFECTS'] = '1'
+
 from scripts.reddit_leads import (
     _ALWAYS_EXCLUDE_WORD_START_PHRASES,
     _SSL_CTX,
@@ -2902,6 +2907,26 @@ class TestConsecutiveDedupFailureShortCircuit(unittest.TestCase):
                          _CONSECUTIVE_DEDUP_FAILURE_SHORT_CIRCUIT)
         mock_warn.assert_called_once()
         self.assertIn('Notion appears unreachable', mock_warn.call_args[0][0])
+
+
+class TestObserveOnlyGate(unittest.TestCase):
+    """When side effects are disabled (sandbox run), Notion writes are skipped
+    so an in-progress script cannot pollute the production leads database."""
+
+    def test_save_lead_skipped_when_disabled(self):
+        with patch.dict(os.environ, {'GITHUB_ACTIONS': '', 'ENABLE_SIDE_EFFECTS': ''}):
+            with patch('scripts.reddit_leads.http_post') as post_mock:
+                save_lead_to_notion(
+                    {'title': 'T', 'url': 'u', 'subreddit': 'forhire', 'content': 'c'},
+                    'db-id',
+                )
+        post_mock.assert_not_called()
+
+    def test_failed_sentinel_skipped_when_disabled(self):
+        with patch.dict(os.environ, {'GITHUB_ACTIONS': '', 'ENABLE_SIDE_EFFECTS': ''}):
+            with patch('scripts.reddit_leads.http_post') as post_mock:
+                save_failed_sentinel_to_notion({'url': 'u'}, 'db-id')
+        post_mock.assert_not_called()
 
 
 if __name__ == '__main__':

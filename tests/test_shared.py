@@ -11,6 +11,11 @@ from unittest.mock import MagicMock, mock_open, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 import shared
 
+# Exercise the production side-effect paths (writes/alerts enabled) regardless
+# of where the suite runs. The observe-only gate has dedicated tests that
+# override this explicitly.
+os.environ['ENABLE_SIDE_EFFECTS'] = '1'
+
 _error_log_patcher = patch('error_log.log_error')
 
 
@@ -417,6 +422,38 @@ class TestWriteSummary(unittest.TestCase):
         with patch('builtins.open') as m:
             shared.write_summary('ignored')
         m.assert_not_called()
+
+
+class TestSideEffectsGate(unittest.TestCase):
+    """The monitoring flow must only perform external side effects in the
+    production cron (GITHUB_ACTIONS) or under an explicit override; sandbox /
+    self-improvement runs stay observe-only."""
+
+    def test_enabled_under_github_actions(self):
+        with patch.dict(os.environ, {'GITHUB_ACTIONS': 'true', 'ENABLE_SIDE_EFFECTS': ''}):
+            self.assertTrue(shared.side_effects_enabled())
+
+    def test_enabled_with_explicit_override(self):
+        with patch.dict(os.environ, {'GITHUB_ACTIONS': '', 'ENABLE_SIDE_EFFECTS': '1'}):
+            self.assertTrue(shared.side_effects_enabled())
+
+    def test_disabled_when_neither_set(self):
+        with patch.dict(os.environ, {'GITHUB_ACTIONS': '', 'ENABLE_SIDE_EFFECTS': ''}):
+            self.assertFalse(shared.side_effects_enabled())
+
+    def test_warn_discord_skips_post_when_disabled(self):
+        with patch.dict(os.environ, {'GITHUB_ACTIONS': '', 'ENABLE_SIDE_EFFECTS': '',
+                                     'DISCORD_ALERTS_WEBHOOK_URL': 'https://example.test/hook'}):
+            with patch('shared.http_post') as post_mock:
+                shared.warn_discord('boom', 'reddit_leads', '/tmp/state.json')
+        post_mock.assert_not_called()
+
+    def test_warn_discord_posts_when_enabled(self):
+        with patch.dict(os.environ, {'ENABLE_SIDE_EFFECTS': '1',
+                                     'DISCORD_ALERTS_WEBHOOK_URL': 'https://example.test/hook'}):
+            with patch('shared.http_post') as post_mock:
+                shared.warn_discord('boom', 'reddit_leads', '/tmp/state.json')
+        post_mock.assert_called_once()
 
 
 if __name__ == '__main__':

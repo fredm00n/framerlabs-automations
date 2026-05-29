@@ -17,6 +17,23 @@ import error_log
 _RETRY_AFTER_MAX_SECONDS = 60
 
 
+def side_effects_enabled() -> bool:
+    """Whether the monitoring flow may perform external side effects.
+
+    The monitoring scripts run in two places: the production GitHub Actions
+    cron (which sets ``GITHUB_ACTIONS=true``) and the self-improvement cloud
+    routine, which runs the same scripts to observe behaviour while developing
+    changes. Only the cron should write to Notion, post to Discord, or tweet —
+    a sandbox run must stay read-only so its in-progress code cannot spam the
+    public channels or pollute the production database. ``ENABLE_SIDE_EFFECTS=1``
+    is an explicit override for tests and deliberate local production runs.
+    """
+    return (
+        os.environ.get('GITHUB_ACTIONS') == 'true'
+        or os.environ.get('ENABLE_SIDE_EFFECTS') == '1'
+    )
+
+
 def load_dotenv() -> None:
     try:
         with open('.env') as f:
@@ -238,7 +255,14 @@ def warn_discord(
     If *dedup_key* is provided and was sent within *suppress_minutes*,
     the alert is silently skipped. Timestamp is only recorded after a
     successful POST.
+
+    When side effects are disabled (a sandbox/self-improvement run), the
+    alert is printed but not posted, so an observing agent still sees it
+    without spamming the production alerts channel.
     """
+    if not side_effects_enabled():
+        print(f'[observe-only] would alert ({script_name}): {message}')
+        return
     if dedup_key and should_suppress_alert(dedup_key, alert_state_path, suppress_minutes):
         print(f'[alert] Suppressing duplicate alert (key={dedup_key})')
         return

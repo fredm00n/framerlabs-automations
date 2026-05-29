@@ -15,6 +15,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 import shared
 import framer_templates as ft
 
+# Exercise the production side-effect paths (writes/notifications enabled)
+# regardless of where the suite runs. The observe-only gate has dedicated
+# tests that override this explicitly.
+os.environ['ENABLE_SIDE_EFFECTS'] = '1'
+
 # ---------------------------------------------------------------------------
 # Prevent test runs from writing to the real logs/errors.jsonl file.
 # Any test that exercises a code path which calls error_log.log_error would
@@ -2797,6 +2802,23 @@ class TestSaveShortCircuit(unittest.TestCase):
             ft.main()
         # First run → no notifications despite successful saves.
         notify_mock.assert_not_called()
+
+
+class TestObserveOnlyGate(unittest.TestCase):
+    """When side effects are disabled (sandbox run), Notion writes and
+    notifications are skipped so an in-progress script cannot touch production."""
+
+    def test_save_to_notion_skipped_when_disabled(self):
+        with patch.dict(os.environ, {'GITHUB_ACTIONS': '', 'ENABLE_SIDE_EFFECTS': ''}):
+            with patch('framer_templates.http_post') as post_mock:
+                ft.save_to_notion({'title': 'T', 'slug': 's', 'url': 'u'})
+        post_mock.assert_not_called()
+
+    def test_notify_discord_batch_skipped_when_disabled(self):
+        with patch.dict(os.environ, {'GITHUB_ACTIONS': '', 'ENABLE_SIDE_EFFECTS': ''}):
+            with patch('framer_templates.http_post') as post_mock:
+                ft.notify_discord_batch([{'title': 'T', 'slug': 's', 'url': 'u'}])
+        post_mock.assert_not_called()
 
 
 if __name__ == '__main__':
