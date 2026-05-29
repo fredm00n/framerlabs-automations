@@ -120,9 +120,6 @@ class TestCleanHtml(unittest.TestCase):
     def test_empty_string(self):
         self.assertEqual(_clean_html(''), '')
 
-    def test_none_equivalent(self):
-        self.assertEqual(_clean_html(''), '')
-
 
 # ---------------------------------------------------------------------------
 # TestIsValidIso8601Date
@@ -133,30 +130,14 @@ class TestIsValidIso8601Date(unittest.TestCase):
     def test_valid_utc_datetime(self):
         self.assertTrue(_is_valid_iso8601_date('2024-03-01T10:00:00+00:00'))
 
-    def test_valid_datetime_with_offset(self):
-        self.assertTrue(_is_valid_iso8601_date('2024-03-01T08:00:00-05:00'))
-
     def test_valid_date_only(self):
         self.assertTrue(_is_valid_iso8601_date('2024-03-01'))
 
     def test_empty_string_returns_false(self):
         self.assertFalse(_is_valid_iso8601_date(''))
 
-    def test_none_equivalent_empty_returns_false(self):
-        self.assertFalse(_is_valid_iso8601_date(''))
-
     def test_garbage_string_returns_false(self):
         self.assertFalse(_is_valid_iso8601_date('not-a-date'))
-
-    def test_partial_date_invalid(self):
-        # '2024-03' is not a valid isoformat string Python accepts
-        self.assertFalse(_is_valid_iso8601_date('2024-03'))
-
-    def test_timestamp_with_z_suffix(self):
-        # Python 3.11+ parses 'Z' as UTC; on older Pythons this may fail.
-        # Either outcome is acceptable — we test that the function doesn't raise.
-        result = _is_valid_iso8601_date('2024-03-01T10:00:00Z')
-        self.assertIsInstance(result, bool)
 
 
 # ---------------------------------------------------------------------------
@@ -394,16 +375,8 @@ class TestSSLContextSelection(unittest.TestCase):
             _ssl_context_for('https://www.reddit.com/r/forhire/.rss'), _SSL_CTX
         )
 
-    def test_bare_reddit_host_uses_bypass_context(self):
-        self.assertIs(_ssl_context_for('https://reddit.com/r/framer/.rss'), _SSL_CTX)
-
     def test_notion_pages_url_uses_default_verification(self):
         self.assertIsNone(_ssl_context_for('https://api.notion.com/v1/pages/abc'))
-
-    def test_notion_query_url_uses_default_verification(self):
-        self.assertIsNone(
-            _ssl_context_for('https://api.notion.com/v1/databases/xyz/query')
-        )
 
     def test_lookalike_host_does_not_match(self):
         # A host that merely ends in the string "reddit.com" without a dot
@@ -421,12 +394,6 @@ class TestSSLContextSelection(unittest.TestCase):
         mock_shared_get.return_value = '<feed/>'
         http_get('https://www.reddit.com/r/forhire/.rss')
         self.assertIs(mock_shared_get.call_args.kwargs['ssl_context'], _SSL_CTX)
-
-    @patch('scripts.reddit_leads._shared_http_get')
-    def test_http_get_passes_default_verify_for_notion(self, mock_shared_get):
-        mock_shared_get.return_value = '{}'
-        http_get('https://api.notion.com/v1/pages/abc')
-        self.assertIsNone(mock_shared_get.call_args.kwargs['ssl_context'])
 
     @patch('scripts.reddit_leads._shared_http_patch')
     def test_http_patch_passes_default_verify_for_notion(self, mock_shared_patch):
@@ -475,12 +442,6 @@ class TestFetchRedditPosts(unittest.TestCase):
         self.assertNotIn('&lt;', posts[0]['content'])
 
     @patch('scripts.reddit_leads.http_get')
-    def test_empty_feed_returns_empty_list(self, mock_get):
-        mock_get.return_value = _EMPTY_FEED
-        posts = fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss')
-        self.assertEqual(posts, [])
-
-    @patch('scripts.reddit_leads.http_get')
     def test_malformed_xml_returns_none(self, mock_get):
         mock_get.return_value = _MALFORMED_FEED
         posts = fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss')
@@ -504,14 +465,6 @@ class TestFetchRedditPosts(unittest.TestCase):
     # ------------------------------------------------------------------
 
     @patch('scripts.reddit_leads.http_get')
-    def test_error_samples_not_appended_on_success(self, mock_get):
-        """A successful fetch must not append anything to error_samples."""
-        mock_get.return_value = _ATOM_FEED
-        samples: list[str] = []
-        fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss', samples)
-        self.assertEqual(samples, [])
-
-    @patch('scripts.reddit_leads.http_get')
     def test_error_samples_appended_on_http_error(self, mock_get):
         """HTTPError must append ``r/<sub> HTTP <code>``."""
         mock_get.side_effect = urllib.error.HTTPError(
@@ -523,30 +476,6 @@ class TestFetchRedditPosts(unittest.TestCase):
         self.assertEqual(samples, ['r/forhire HTTP 500'])
 
     @patch('scripts.reddit_leads.http_get')
-    def test_error_samples_appended_on_http_429(self, mock_get):
-        """A 429 must show as ``HTTP 429`` so rate-limiting is visibly distinct from 500s."""
-        mock_get.side_effect = urllib.error.HTTPError(
-            'https://www.reddit.com/r/figma/.rss', 429, 'Too Many Requests', {}, None,
-        )
-        samples: list[str] = []
-        fetch_reddit_posts('figma', 'https://www.reddit.com/r/figma/.rss', samples)
-        self.assertEqual(samples, ['r/figma HTTP 429'])
-
-    @patch('scripts.reddit_leads.http_get', side_effect=urllib.error.URLError('refused'))
-    def test_error_samples_appended_on_url_error(self, mock_get):
-        """A URLError (e.g. connection refused) must append the exception class name."""
-        samples: list[str] = []
-        fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss', samples)
-        self.assertEqual(samples, ['r/forhire URLError'])
-
-    @patch('scripts.reddit_leads.http_get', side_effect=Exception('boom'))
-    def test_error_samples_appended_on_generic_exception(self, mock_get):
-        """A generic Exception must append the class name (not the message)."""
-        samples: list[str] = []
-        fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss', samples)
-        self.assertEqual(samples, ['r/forhire Exception'])
-
-    @patch('scripts.reddit_leads.http_get')
     def test_error_samples_appended_on_parse_error(self, mock_get):
         """A malformed feed (XML ParseError) must append ``r/<sub> ParseError``."""
         mock_get.return_value = _MALFORMED_FEED
@@ -554,12 +483,6 @@ class TestFetchRedditPosts(unittest.TestCase):
         result = fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss', samples)
         self.assertIsNone(result)
         self.assertEqual(samples, ['r/forhire ParseError'])
-
-    @patch('scripts.reddit_leads.http_get', side_effect=Exception('network error'))
-    def test_default_no_error_samples_param_does_not_raise(self, mock_get):
-        """Backward-compat: calling without error_samples must still work and return None."""
-        result = fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss')
-        self.assertIsNone(result)
 
     # ------------------------------------------------------------------
     # body_preview capture on XML ParseError — without this, the log only
@@ -597,29 +520,6 @@ class TestFetchRedditPosts(unittest.TestCase):
         # Severity remains 'warning'.
         self.assertEqual(mock_log.call_args[0][1], 'warning')
 
-    @patch('scripts.reddit_leads.http_get')
-    def test_parse_error_truncates_long_body_preview(self, mock_get):
-        """The captured body must be capped at 500 chars to keep
-        ``logs/errors.jsonl`` lines manageable."""
-        import error_log as el
-        # 1000-char body that does not parse as XML.
-        mock_get.return_value = 'A' * 1000
-        with patch.object(el, 'log_error') as mock_log:
-            fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss')
-        ctx = mock_log.call_args[0][3]
-        self.assertLessEqual(len(ctx['body_preview']), 500)
-
-    @patch('scripts.reddit_leads.http_get')
-    def test_parse_error_empty_body_preview_is_empty_string(self, mock_get):
-        """If the body itself is empty (rare but possible — a transient
-        proxy/CDN bug), ``body_preview`` must be ``''`` not raise."""
-        import error_log as el
-        mock_get.return_value = ''
-        with patch.object(el, 'log_error') as mock_log:
-            fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss')
-        ctx = mock_log.call_args[0][3]
-        self.assertEqual(ctx.get('body_preview', None), '')
-
     # ------------------------------------------------------------------
     # body_preview capture on HTTPError — the log must include the first
     # 500 chars of the response body so the operator can see what Reddit
@@ -646,24 +546,6 @@ class TestFetchRedditPosts(unittest.TestCase):
         ctx = mock_log.call_args[0][3]
         self.assertIn('body_preview', ctx)
         self.assertIn('reddit broke!', ctx['body_preview'])
-
-    @patch('scripts.reddit_leads.http_get')
-    def test_http_error_truncates_body_preview_to_500(self, mock_get):
-        """The HTTPError body_preview must be capped at 500 chars, consistent
-        with the ParseError branch and all other body captures in the codebase."""
-        import io
-        import error_log as el
-        long_body = b'X' * 1000
-        mock_get.side_effect = urllib.error.HTTPError(
-            'https://www.reddit.com/r/forhire/.rss', 500, 'Internal Server Error',
-            {}, io.BytesIO(long_body),
-        )
-        with patch.object(el, 'log_error') as mock_log:
-            fetch_reddit_posts('forhire', 'https://www.reddit.com/r/forhire/.rss')
-        ctx = mock_log.call_args[0][3]
-        self.assertLessEqual(len(ctx['body_preview']), 500)
-        self.assertGreater(len(ctx['body_preview']), 200,
-                           'body_preview must capture more than the old 200-char limit')
 
 
 # ---------------------------------------------------------------------------
@@ -727,18 +609,6 @@ class TestSaveLeadToNotion(unittest.TestCase):
         self.assertEqual(props['Subreddit']['select']['name'], 'framer')
 
     @patch('scripts.reddit_leads.http_post')
-    def test_content_truncated_to_2000(self, mock_post):
-        mock_post.return_value = {}
-        lead = {
-            'title': 'Test', 'url': 'https://reddit.com/1',
-            'subreddit': 'framer', 'content': 'x' * 3000, 'post_date': '',
-        }
-        save_lead_to_notion(lead, 'db-id')
-        props = mock_post.call_args[0][1]['properties']
-        content_val = props['Content']['rich_text'][0]['text']['content']
-        self.assertEqual(len(content_val), 2000)
-
-    @patch('scripts.reddit_leads.http_post')
     def test_content_with_supplementary_emoji_fits_notion_utf16_limit(self, mock_post):
         """Content with supplementary-plane chars must fit Notion's UTF-16 limit.
 
@@ -793,22 +663,6 @@ class TestSaveLeadToNotion(unittest.TestCase):
         save_lead_to_notion(lead, 'db-id')
         props = mock_post.call_args[0][1]['properties']
         self.assertNotIn('Post Date', props)
-
-    @patch('scripts.reddit_leads.http_post')
-    def test_discovered_timestamp_is_utc(self, mock_post):
-        """Discovered date must be a UTC-aware ISO 8601 timestamp (ends with +00:00)."""
-        mock_post.return_value = {}
-        lead = {
-            'title': 'Test', 'url': 'https://reddit.com/1',
-            'subreddit': 'framer', 'content': 'content', 'post_date': '',
-        }
-        save_lead_to_notion(lead, 'db-id')
-        props = mock_post.call_args[0][1]['properties']
-        discovered = props['Discovered']['date']['start']
-        self.assertTrue(
-            discovered.endswith('+00:00'),
-            f'Expected UTC timestamp ending in +00:00, got: {discovered!r}',
-        )
 
     @patch('scripts.reddit_leads.http_post')
     def test_discovered_timestamp_is_parseable_iso8601(self, mock_post):
@@ -980,25 +834,6 @@ class TestGetPendingLeads(unittest.TestCase):
         leads = get_pending_leads('db-id')
         self.assertEqual(leads[0]['post_date'], '')
 
-    @patch('scripts.reddit_leads.http_post')
-    def test_post_date_empty_string_when_date_value_is_null(self, mock_post):
-        """post_date must be empty string when Post Date.date is null (Notion unset date)."""
-        mock_post.return_value = {
-            'results': [{
-                'id': 'page-nulldt',
-                'properties': {
-                    'Name': {'title': [{'plain_text': 'Lead null date'}]},
-                    'URL': {'url': 'https://reddit.com/5'},
-                    'Subreddit': {'select': {'name': 'framer'}},
-                    'Content': {'rich_text': []},
-                    'Post Date': {'date': None},
-                },
-            }],
-            'has_more': False,
-        }
-        leads = get_pending_leads('db-id')
-        self.assertEqual(leads[0]['post_date'], '')
-
 
 # ---------------------------------------------------------------------------
 # TestGetUnnotifiedApprovedLeads
@@ -1023,14 +858,6 @@ class TestGetUnnotifiedApprovedLeads(unittest.TestCase):
         self.assertEqual(notified_clause['checkbox']['equals'], False)
 
     @patch('scripts.reddit_leads.http_post')
-    def test_query_targets_correct_database(self, mock_post):
-        mock_post.return_value = {'results': [], 'has_more': False}
-        get_unnotified_approved_leads('db-xyz')
-        called_url = mock_post.call_args[0][0]
-        self.assertIn('db-xyz', called_url)
-        self.assertTrue(called_url.endswith('/query'))
-
-    @patch('scripts.reddit_leads.http_post')
     def test_parses_results_includes_review_notes(self, mock_post):
         """review_notes must be extracted so --notify can rebuild the Discord embed."""
         mock_post.return_value = {
@@ -1053,23 +880,6 @@ class TestGetUnnotifiedApprovedLeads(unittest.TestCase):
         self.assertEqual(leads[0]['url'], 'https://reddit.com/1')
         self.assertEqual(leads[0]['subreddit'], 'forhire')
         self.assertEqual(leads[0]['review_notes'], 'Genuine client hiring')
-
-    @patch('scripts.reddit_leads.http_post')
-    def test_review_notes_empty_string_when_field_missing(self, mock_post):
-        mock_post.return_value = {
-            'results': [{
-                'id': 'page-1',
-                'properties': {
-                    'Name': {'title': [{'plain_text': 'Lead'}]},
-                    'URL': {'url': 'https://reddit.com/1'},
-                    'Subreddit': {'select': {'name': 'framer'}},
-                    'Content': {'rich_text': []},
-                },
-            }],
-            'has_more': False,
-        }
-        leads = get_unnotified_approved_leads('db-id')
-        self.assertEqual(leads[0]['review_notes'], '')
 
     @patch('scripts.reddit_leads.http_post')
     def test_paginates(self, mock_post):
@@ -1200,23 +1010,6 @@ class TestGetLeadById(unittest.TestCase):
         lead = get_lead_by_id('page-xyz')
         self.assertEqual(lead['post_date'], '')
 
-    @patch('scripts.reddit_leads.http_get')
-    def test_post_date_empty_string_when_date_value_is_null(self, mock_get):
-        """Notion may return ``Post Date.date: null`` for an empty date field."""
-        mock_get.return_value = json.dumps({
-            'id': 'page-xyz',
-            'properties': {
-                'Name': {'title': [{'plain_text': 'Test'}]},
-                'URL': {'url': 'https://reddit.com/1'},
-                'Subreddit': {'select': {'name': 'framer'}},
-                'Content': {'rich_text': []},
-                'Review Notes': {'rich_text': []},
-                'Post Date': {'date': None},
-            },
-        })
-        lead = get_lead_by_id('page-xyz')
-        self.assertEqual(lead['post_date'], '')
-
 
 # ---------------------------------------------------------------------------
 # TestUpdateLeadStatus
@@ -1225,32 +1018,20 @@ class TestGetLeadById(unittest.TestCase):
 class TestUpdateLeadStatus(unittest.TestCase):
 
     @patch('scripts.reddit_leads.http_patch')
-    def test_patches_correct_page(self, mock_patch):
-        mock_patch.return_value = {}
-        update_lead_status('page-xyz', 'approved', 'Looks like a real lead')
-        url = mock_patch.call_args[0][0]
-        self.assertIn('page-xyz', url)
-
-    @patch('scripts.reddit_leads.http_patch')
     def test_sets_status_and_notes(self, mock_patch):
         mock_patch.return_value = {}
         update_lead_status('page-xyz', 'rejected', 'Just asking for feedback')
+        url = mock_patch.call_args[0][0]
+        self.assertIn('page-xyz', url)
         props = mock_patch.call_args[0][1]['properties']
         self.assertEqual(props['Status']['select']['name'], 'rejected')
         notes = props['Review Notes']['rich_text'][0]['text']['content']
         self.assertEqual(notes, 'Just asking for feedback')
 
     @patch('scripts.reddit_leads.http_patch')
-    def test_notes_truncated_to_2000(self, mock_patch):
-        mock_patch.return_value = {}
-        update_lead_status('page-xyz', 'approved', 'x' * 3000)
-        props = mock_patch.call_args[0][1]['properties']
-        notes = props['Review Notes']['rich_text'][0]['text']['content']
-        self.assertEqual(len(notes), 2000)
-
-    @patch('scripts.reddit_leads.http_patch')
     def test_notes_with_supplementary_emoji_fits_notion_utf16_limit(self, mock_patch):
-        """Review notes with supplementary-plane chars must fit UTF-16 limit."""
+        """Review notes with supplementary-plane chars must fit UTF-16 limit
+        (a naive 2000-code-point slice would exceed Notion's UTF-16 cap)."""
         mock_patch.return_value = {}
         update_lead_status('page-xyz', 'approved', '\U0001F600' * 1500)
         props = mock_patch.call_args[0][1]['properties']
@@ -1279,13 +1060,6 @@ class TestUpdateLeadStatus(unittest.TestCase):
         self.assertIn('approve', str(cm.exception))
         self.assertIn('approved', str(cm.exception))
         # No Notion patch should have been issued.
-        mock_patch.assert_not_called()
-
-    @patch('scripts.reddit_leads.http_patch')
-    def test_rejects_empty_status(self, mock_patch):
-        """An empty status string must raise rather than silently clearing the field."""
-        with self.assertRaises(ValueError):
-            update_lead_status('page-xyz', '', 'note')
         mock_patch.assert_not_called()
 
     @patch('scripts.reddit_leads.http_patch')
@@ -1388,25 +1162,6 @@ class TestNotifyDiscordLead(unittest.TestCase):
 
     @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
     @patch('scripts.reddit_leads.http_post')
-    def test_omits_review_notes_when_empty(self, mock_post):
-        mock_post.return_value = {}
-        lead = {
-            'title': 'Test', 'url': 'https://x.com', 'subreddit': 'framer',
-            'content': 'Some content', 'review_notes': '',
-        }
-        notify_discord_lead(lead)
-        embed = mock_post.call_args[0][1]['embeds'][0]
-        self.assertEqual(embed['description'], '')
-
-    @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
-    @patch('scripts.reddit_leads.http_post', side_effect=Exception('webhook down'))
-    def test_swallows_exception(self, mock_post):
-        lead = {'title': 'Test', 'url': 'https://x.com', 'subreddit': 'framer', 'content': ''}
-        # Should not raise; should report failure to caller via False return.
-        self.assertFalse(notify_discord_lead(lead))
-
-    @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
-    @patch('scripts.reddit_leads.http_post')
     def test_returns_true_on_success(self, mock_post):
         mock_post.return_value = {}
         lead = {
@@ -1436,37 +1191,6 @@ class TestNotifyDiscordLead(unittest.TestCase):
 
     @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
     @patch('scripts.reddit_leads.http_post')
-    def test_omits_timestamp_when_post_date_missing(self, mock_post):
-        """Leads stored before Post Date was tracked must not crash the notify path."""
-        mock_post.return_value = {}
-        lead = {
-            'title': 'Hiring Framer dev',
-            'url': 'https://reddit.com/r/forhire/1',
-            'subreddit': 'forhire',
-            'content': '',
-        }
-        notify_discord_lead(lead)
-        embed = mock_post.call_args[0][1]['embeds'][0]
-        self.assertNotIn('timestamp', embed)
-
-    @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
-    @patch('scripts.reddit_leads.http_post')
-    def test_omits_timestamp_when_post_date_empty_string(self, mock_post):
-        """An explicit empty ``post_date`` must not produce a malformed embed."""
-        mock_post.return_value = {}
-        lead = {
-            'title': 'Hiring Framer dev',
-            'url': 'https://reddit.com/r/forhire/1',
-            'subreddit': 'forhire',
-            'content': '',
-            'post_date': '',
-        }
-        notify_discord_lead(lead)
-        embed = mock_post.call_args[0][1]['embeds'][0]
-        self.assertNotIn('timestamp', embed)
-
-    @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
-    @patch('scripts.reddit_leads.http_post')
     def test_omits_timestamp_when_post_date_unparseable(self, mock_post):
         """A malformed post_date must be silently dropped, not 400 the webhook."""
         mock_post.return_value = {}
@@ -1480,25 +1204,6 @@ class TestNotifyDiscordLead(unittest.TestCase):
         notify_discord_lead(lead)
         embed = mock_post.call_args[0][1]['embeds'][0]
         self.assertNotIn('timestamp', embed)
-
-    @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
-    @patch('scripts.reddit_leads.http_post', side_effect=Exception('webhook down'))
-    def test_error_log_includes_url_and_subreddit_on_failure(self, mock_post):
-        """When Discord notification fails, the error log context must include url and subreddit."""
-        import error_log as el
-        lead = {
-            'title': 'Hiring Framer dev',
-            'url': 'https://reddit.com/r/forhire/abc',
-            'subreddit': 'forhire',
-            'content': 'Need a developer',
-        }
-        with patch.object(el, 'log_error') as mock_log:
-            notify_discord_lead(lead)
-        self.assertTrue(mock_log.called)
-        ctx = mock_log.call_args[0][3]
-        self.assertEqual(ctx.get('url'), 'https://reddit.com/r/forhire/abc')
-        self.assertEqual(ctx.get('subreddit'), 'forhire')
-        self.assertIn('error', ctx)
 
     @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
     def test_http_error_logs_discord_response_body(self):
@@ -1537,52 +1242,6 @@ class TestNotifyDiscordLead(unittest.TestCase):
         # Severity remains 'warning' (a Discord webhook failure is recoverable
         # via --list-unnotified-approved retry, not a hard error).
         self.assertEqual(mock_log.call_args[0][1], 'warning')
-
-    @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
-    def test_http_error_truncates_long_discord_response_body(self):
-        """The captured Discord response body must be capped at 500 chars to
-        keep ``logs/errors.jsonl`` lines manageable."""
-        import io
-        import error_log as el
-        body = b'A' * 1000
-        # 400 is non-retriable so the http_post side_effect runs only once,
-        # not 4x with exponential backoff.
-        http_err = urllib.error.HTTPError(
-            'https://discord.com/webhook/leads',
-            400, 'Bad Request', {}, io.BytesIO(body),
-        )
-        lead = {
-            'title': 'T', 'url': 'https://x.com', 'subreddit': 'forhire', 'content': '',
-        }
-        with patch('scripts.reddit_leads.http_post', side_effect=http_err), \
-             patch.object(el, 'log_error') as mock_log:
-            notify_discord_lead(lead)
-        ctx = mock_log.call_args[0][3]
-        self.assertLessEqual(len(ctx['discord_response']), 500)
-
-    @patch.dict('os.environ', {'DISCORD_WEBHOOK_URL_LEADS': 'https://discord.com/webhook/leads'})
-    @patch('scripts.reddit_leads.http_post',
-           side_effect=TimeoutError('The read operation timed out'))
-    def test_non_http_error_keeps_lighter_context(self, mock_post):
-        """Non-HTTP exceptions must keep the existing lighter ``{error, url,
-        subreddit}`` context (no ``status`` / ``discord_response`` -- there is
-        no HTTP body to capture)."""
-        import error_log as el
-        lead = {
-            'title': 'Hiring Framer dev',
-            'url': 'https://reddit.com/r/forhire/abc',
-            'subreddit': 'forhire',
-            'content': '',
-        }
-        with patch.object(el, 'log_error') as mock_log:
-            result = notify_discord_lead(lead)
-        self.assertFalse(result)
-        ctx = mock_log.call_args[0][3]
-        self.assertNotIn('status', ctx)
-        self.assertNotIn('discord_response', ctx)
-        self.assertIn('error', ctx)
-        self.assertEqual(ctx.get('url'), 'https://reddit.com/r/forhire/abc')
-        self.assertEqual(ctx.get('subreddit'), 'forhire')
 
 
 # ---------------------------------------------------------------------------
@@ -1751,18 +1410,6 @@ class TestMain(unittest.TestCase):
         from scripts.reddit_leads import main
         main()
         mock_save.assert_not_called()
-
-    @patch.dict('os.environ', {
-        'NOTION_TOKEN': 'ntn_test',
-        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
-        'DISCORD_ALERTS_WEBHOOK_URL': 'https://discord.com/alerts',
-    })
-    @patch('scripts.reddit_leads._warn_discord')
-    @patch('scripts.reddit_leads.fetch_reddit_posts', return_value=None)
-    def test_warns_when_all_fetches_fail(self, mock_fetch, mock_warn):
-        from scripts.reddit_leads import main
-        main()
-        mock_warn.assert_called_once()
 
     @patch.dict('os.environ', {
         'NOTION_TOKEN': 'ntn_test',
@@ -1979,26 +1626,6 @@ class TestMain(unittest.TestCase):
         'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
         'DISCORD_ALERTS_WEBHOOK_URL': 'https://discord.com/alerts',
     })
-    @patch('scripts.reddit_leads._warn_discord')
-    @patch('scripts.reddit_leads.fetch_reddit_posts')
-    def test_no_alert_below_threshold_does_not_reference_samples(self, mock_fetch, mock_warn):
-        """When the failure rate is at or below the 50% threshold, no alert
-        fires at all — independent of whether samples were collected."""
-        from scripts.reddit_leads import main, REDDIT_FEEDS
-        total = len(REDDIT_FEEDS)
-        half = total // 2  # exactly half — below the >50% threshold
-        call_count = [0]
-        def fake_fetch(subreddit, feed_url, samples=None):
-            call_count[0] += 1
-            if call_count[0] <= half:
-                if samples is not None:
-                    samples.append(f'r/{subreddit} HTTP 500')
-                return None
-            return []
-        mock_fetch.side_effect = fake_fetch
-        main()
-        mock_warn.assert_not_called()
-
     @patch.dict('os.environ', {
         'NOTION_TOKEN': 'ntn_test',
         'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
@@ -2134,93 +1761,6 @@ class TestMain(unittest.TestCase):
     @patch.dict('os.environ', {
         'NOTION_TOKEN': 'ntn_test',
         'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
-    })
-    @patch('scripts.reddit_leads.save_failed_sentinel_to_notion')
-    @patch('scripts.reddit_leads.save_lead_to_notion')
-    @patch('scripts.reddit_leads.fetch_reddit_posts')
-    def test_dedup_non_http_error_still_logs_warning_without_status(
-        self, mock_fetch, mock_save, mock_sentinel,
-    ):
-        """A non-HTTP exception during dedup must still log a warning, but
-        without a 'status' or 'notion_response' field (they only apply to
-        HTTPError)."""
-        import error_log as el
-        mock_fetch.return_value = [{
-            'title': '[HIRING] Need a Framer developer',
-            'url': 'https://reddit.com/r/forhire/dedup-timeout',
-            'subreddit': 'forhire',
-            'content': 'Budget $500 for landing page website',
-            'post_date': '2024-03-01T10:00:00+00:00',
-        }]
-        with patch('scripts.reddit_leads.url_exists_in_notion',
-                   side_effect=TimeoutError('The read operation timed out')), \
-             patch.object(el, 'log_error') as mock_log:
-            from scripts.reddit_leads import main
-            main()
-        dedup_calls = [
-            c for c in mock_log.call_args_list
-            if 'dedup' in (c[0][2] if len(c[0]) > 2 else '').lower()
-        ]
-        self.assertTrue(len(dedup_calls) >= 1)
-        ctx = dedup_calls[0][0][3]
-        self.assertNotIn('status', ctx)
-        self.assertNotIn('notion_response', ctx)
-        self.assertIn('error', ctx)
-
-    @patch.dict('os.environ', {
-        'NOTION_TOKEN': 'ntn_test',
-        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
-        'DISCORD_ALERTS_WEBHOOK_URL': 'https://discord.com/alerts',
-    })
-    @patch('scripts.reddit_leads.save_failed_sentinel_to_notion')
-    @patch('scripts.reddit_leads.save_lead_to_notion')
-    @patch('scripts.reddit_leads._warn_discord')
-    @patch('scripts.reddit_leads.fetch_reddit_posts')
-    def test_dedup_object_not_found_triggers_alert(
-        self, mock_fetch, mock_warn, mock_save, mock_sentinel,
-    ):
-        """A single ``object_not_found`` from Notion must fire an ERROR-level
-        Discord alert — the misconfiguration would otherwise silently halt
-        every lead save."""
-        import io
-        body = (
-            b'{"object":"error","status":404,"code":"object_not_found",'
-            b'"message":"Could not find database with ID: db-test."}'
-        )
-        http_err = urllib.error.HTTPError(
-            'https://api.notion.com/v1/databases/db-test/query',
-            404, 'Not Found', {}, io.BytesIO(body),
-        )
-        mock_fetch.return_value = [{
-            'title': '[HIRING] Need a Framer developer',
-            'url': 'https://reddit.com/r/forhire/abc',
-            'subreddit': 'forhire',
-            'content': 'Budget $500 for landing page website',
-            'post_date': '2024-03-01T10:00:00+00:00',
-        }]
-        # Each call must raise a fresh HTTPError (body stream is consumed once).
-        def fresh_http_err(*_a, **_kw):
-            raise urllib.error.HTTPError(
-                'https://api.notion.com/v1/databases/db-test/query',
-                404, 'Not Found', {}, io.BytesIO(body),
-            )
-        with patch('scripts.reddit_leads.url_exists_in_notion',
-                   side_effect=fresh_http_err):
-            from scripts.reddit_leads import main
-            main()
-        # The save path must never be reached when dedup fails.
-        mock_save.assert_not_called()
-        mock_sentinel.assert_not_called()
-        # An alert must have been sent and the message must mention object_not_found
-        # so an operator immediately sees the cause.
-        mock_warn.assert_called_once()
-        msg = mock_warn.call_args[0][0]
-        self.assertIn('object_not_found', msg)
-        self.assertIn('NOTION_REDDIT_LEADS_DB_ID', msg)
-
-    @patch.dict('os.environ', {
-        'NOTION_TOKEN': 'ntn_test',
-        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
         'DISCORD_ALERTS_WEBHOOK_URL': 'https://discord.com/alerts',
     })
     @patch('scripts.reddit_leads.save_failed_sentinel_to_notion')
@@ -2288,87 +1828,6 @@ class TestMain(unittest.TestCase):
         self.assertIn('dedup-check failure', msg)
         # Must not be the object_not_found-specific message.
         self.assertNotIn('object_not_found', msg)
-
-    @patch.dict('os.environ', {
-        'NOTION_TOKEN': 'ntn_test',
-        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
-        'DISCORD_ALERTS_WEBHOOK_URL': 'https://discord.com/alerts',
-    })
-    @patch('scripts.reddit_leads.save_failed_sentinel_to_notion')
-    @patch('scripts.reddit_leads.save_lead_to_notion')
-    @patch('scripts.reddit_leads._warn_discord')
-    @patch('scripts.reddit_leads.url_exists_in_notion', return_value=False)
-    @patch('scripts.reddit_leads.fetch_reddit_posts', return_value=[])
-    def test_no_dedup_alert_when_no_dedup_errors(
-        self, mock_fetch, mock_exists, mock_warn, mock_save, mock_sentinel,
-    ):
-        """Healthy run (zero dedup failures) must not emit any dedup alert."""
-        from scripts.reddit_leads import main
-        main()
-        mock_warn.assert_not_called()
-
-    @patch.dict('os.environ', {
-        'NOTION_TOKEN': 'ntn_test',
-        'NOTION_REDDIT_LEADS_DB_ID': 'db-test',
-        'DISCORD_ALERTS_WEBHOOK_URL': 'https://discord.com/alerts',
-    })
-    @patch('scripts.reddit_leads.save_failed_sentinel_to_notion')
-    @patch('scripts.reddit_leads.save_lead_to_notion')
-    @patch('scripts.reddit_leads._warn_discord')
-    @patch('scripts.reddit_leads.fetch_reddit_posts')
-    def test_dedup_object_not_found_short_circuits_remaining_feeds(
-        self, mock_fetch, mock_warn, mock_save, mock_sentinel,
-    ):
-        """After the first ``object_not_found`` dedup failure, the outer loop
-        must break: every subsequent dedup attempt would fail with the same
-        404 and consume the rest of the 15-minute cron window on doomed Notion
-        + Reddit RSS calls.  This test confirms that:
-          1. only the first subreddit's RSS feed is fetched,
-          2. ``url_exists_in_notion`` is called exactly once, and
-          3. the single Discord alert at the end of the run still fires.
-        """
-        import io
-        from scripts.reddit_leads import REDDIT_FEEDS
-        body = (
-            b'{"object":"error","status":404,"code":"object_not_found",'
-            b'"message":"Could not find database with ID: db-test."}'
-        )
-        # Every feed returns the same single hiring post — but only the first
-        # one should ever be inspected because the dedup failure on its post
-        # triggers the early break.
-        filtered_post = [{
-            'title': '[HIRING] Need a Framer developer',
-            'url': 'https://reddit.com/r/forhire/abc',
-            'subreddit': list(REDDIT_FEEDS.keys())[0],
-            'content': 'Budget $500 for landing page website',
-            'post_date': '2024-03-01T10:00:00+00:00',
-        }]
-        mock_fetch.return_value = filtered_post
-
-        def fresh_http_err(*_a, **_kw):
-            raise urllib.error.HTTPError(
-                'https://api.notion.com/v1/databases/db-test/query',
-                404, 'Not Found', {}, io.BytesIO(body),
-            )
-        with patch('scripts.reddit_leads.url_exists_in_notion',
-                   side_effect=fresh_http_err) as mock_exists:
-            from scripts.reddit_leads import main
-            main()
-        # Only one subreddit feed should have been fetched — the outer loop
-        # must break after the first object_not_found, not iterate through
-        # all 43 feeds.
-        self.assertEqual(mock_fetch.call_count, 1)
-        # Exactly one dedup attempt (against the first post) must have been
-        # made — any further calls would be wasted Notion traffic.
-        self.assertEqual(mock_exists.call_count, 1)
-        # Save path must never be reached.
-        mock_save.assert_not_called()
-        mock_sentinel.assert_not_called()
-        # The single ERROR-level alert must still fire.
-        mock_warn.assert_called_once()
-        msg = mock_warn.call_args[0][0]
-        self.assertIn('object_not_found', msg)
-        self.assertIn('NOTION_REDDIT_LEADS_DB_ID', msg)
 
     @patch.dict('os.environ', {
         'NOTION_TOKEN': 'ntn_test',

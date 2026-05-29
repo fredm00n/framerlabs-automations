@@ -697,18 +697,10 @@ def _warn_discord(message: str, dedup_key: str | None = None,
 # ---------------------------------------------------------------------------
 
 # When dedup-check failures meet or exceed this threshold within a single run,
-# emit a Discord alert.  The thresholds are split because the failure modes
-# are very different:
-#   * A Notion ``object_not_found`` 404 is almost always a permanent
-#     misconfiguration (deleted DB, integration access revoked, wrong DB id
-#     in the secret) — every subsequent post will silently skip its dedup
-#     check, no leads will be saved, and operators won't notice until the
-#     lead flow dries up days later.  Alert on the first occurrence so the
-#     misconfiguration surfaces immediately.
-#   * Other dedup failures (transient network errors, read timeouts, generic
-#     5xx) are individually OK to skip but a sustained burst within a single
-#     run also warrants a heads-up.
-_DEDUP_OBJECT_NOT_FOUND_ALERT_THRESHOLD = 1
+# emit a Discord alert. Individual dedup failures (transient network errors,
+# read timeouts, generic 5xx) are OK to skip, but a sustained burst within one
+# run warrants a heads-up. A misconfigured/inaccessible DB is caught earlier and
+# more specifically by the Notion preflight, so it needs no in-loop special case.
 _DEDUP_OTHER_FAILURE_ALERT_THRESHOLD = 5
 
 # After this many *consecutive* dedup failures with zero successes between
@@ -729,8 +721,8 @@ def _notion_preflight(db_id: str) -> tuple[bool, str, int | None, str]:
     Returns ``(ok, error_type, http_status, body_preview)``:
       * On success: ``(True, '', None, '')``.
       * On ``object_not_found`` 404: ``('object_not_found', 404, body)``
-        so the caller can fire the same DB-misconfigured alert it would
-        for an in-flight ``object_not_found``.
+        so the caller can fire a specific DB-misconfigured alert (deleted,
+        renamed, or no longer shared with the integration).
       * On any other ``HTTPError``: ``(False, f'HTTP <code>', code, body)``.
       * On any other exception: ``(False, type(exc).__name__, None, '')``.
 
@@ -817,7 +809,6 @@ def main() -> None:
     total_saved = 0
     fetch_errors = 0
     dedup_errors = 0
-    dedup_object_not_found_errors = 0
     # Sample of dedup-failure context (subreddit + status code or error type),
     # surfaced in the Discord alert so an operator can see the most-likely root
     # cause without opening the log file.  Capped to keep the alert readable.
@@ -830,31 +821,18 @@ def main() -> None:
     # the alert only carries the failure count, which gives no signal about
     # whether to wait it out, throttle harder, or investigate.
     fetch_error_samples: list[str] = []
-    # Flag set the first time the dedup check returns Notion ``object_not_found``.
-    # Once true, the configured ``NOTION_REDDIT_LEADS_DB_ID`` is misconfigured
-    # (deleted, renamed, or no longer shared with the integration), so every
-    # subsequent dedup and every save in the run will fail the same way.  We
-    # stop fetching further subreddit feeds to (a) save the remaining ~60s of
-    # ``_INTER_FEED_DELAY`` pacing + retry-backoff on Reddit + Notion calls,
-    # and (b) avoid flooding ``logs/errors.jsonl`` with one warning entry per
-    # filtered post (each entry contributing nothing diagnostic beyond the
-    # first one).  The single alert at the end of the run still fires.
-    db_misconfigured = False
     # Counter for *consecutive* dedup failures with no successes between them.
-    # Resets to 0 on any successful dedup or save.  When it reaches
-    # ``_CONSECUTIVE_DEDUP_FAILURE_SHORT_CIRCUIT`` we treat Notion as
-    # in-flight unhealthy and short-circuit the rest of the run, even when
-    # the failure mode is not ``object_not_found``.  This generalises the
-    # PR #92 fix to cover today's incident classes (TimeoutError, URLError,
-    # generic 5xx) that were deliberately left out of #92's narrow scope.
+    # Resets to 0 on any successful dedup or save. After
+    # ``_CONSECUTIVE_DEDUP_FAILURE_SHORT_CIRCUIT`` in a row we treat Notion as
+    # unreachable for this run and short-circuit, rather than grinding through
+    # 40+ doomed dedup calls (each ~30s timeout × 4 retries) past the cron tick.
     consecutive_dedup_failures = 0
     notion_likely_down = False
 
     for i, (subreddit, feed_url) in enumerate(REDDIT_FEEDS.items()):
-        if db_misconfigured or notion_likely_down:
-            # Skip the remaining RSS fetches — Notion is in a state where no
-            # further work in this run can succeed.  The end-of-main alert
-            # path still fires below.
+        if notion_likely_down:
+            # Skip the remaining RSS fetches — Notion is unreachable for this
+            # run, so no further work can succeed. The end-of-run alert fires below.
             break
         if i > 0:
             time.sleep(_INTER_FEED_DELAY)
@@ -903,33 +881,11 @@ def main() -> None:
                 )
                 dedup_errors += 1
                 consecutive_dedup_failures += 1
-                # Treat ``object_not_found`` specially: it means the configured
-                # NOTION_REDDIT_LEADS_DB_ID is invalid / not shared with the
-                # integration, so every dedup check for the rest of the run
-                # will fail the same way.  Tracked separately so a single
-                # occurrence is enough to fire the alert.
-                if 'object_not_found' in notion_response:
-                    dedup_object_not_found_errors += 1
-                    # First time we see this in a run: short-circuit the
-                    # remaining work.  We've already logged the warning and
-                    # captured a sample; doing N more dedup attempts (one per
-                    # filtered post for the remaining subreddits) would only
-                    # flood the log file with the same error and consume the
-                    # rest of the 15-minute cron window on doomed Notion +
-                    # Reddit RSS calls.  Set the flag so the outer loop
-                    # breaks; the existing alert path at the end of ``main()``
-                    # still fires with the single sample we collected.
-                    db_misconfigured = True
-                elif consecutive_dedup_failures >= _CONSECUTIVE_DEDUP_FAILURE_SHORT_CIRCUIT:
-                    # Sustained dedup failures with no successes between
-                    # them: Notion is in-flight unhealthy (timeouts, 5xx,
-                    # connection errors).  Generalises the PR #92 narrow
-                    # ``object_not_found`` short-circuit so the run does
-                    # not grind through 40+ doomed dedup calls.
+                if consecutive_dedup_failures >= _CONSECUTIVE_DEDUP_FAILURE_SHORT_CIRCUIT:
                     notion_likely_down = True
                 if len(dedup_error_samples) < 5:
                     dedup_error_samples.append(f'r/{subreddit} HTTP {e.code}')
-                if db_misconfigured or notion_likely_down:
+                if notion_likely_down:
                     break  # exit the inner per-post loop; outer loop break is next
                 continue  # skip this post; do not attempt to save or write sentinel
             except Exception as e:
@@ -1020,35 +976,13 @@ def main() -> None:
         )
 
     # Dedup-check failure alerting: dedup failures cause every affected post to
-    # be silently skipped (no save attempted, no sentinel written).  In normal
-    # operation they should be 0; a sustained burst within a single run almost
-    # always means Notion is misconfigured (deleted DB, revoked integration,
-    # bad secret) and the script will save no new leads until fixed.  See the
-    # 2026-05-04 incident in logs/errors.jsonl for an example.
-    if dedup_object_not_found_errors >= _DEDUP_OBJECT_NOT_FOUND_ALERT_THRESHOLD:
-        sample_str = '; '.join(dedup_error_samples) if dedup_error_samples else 'none'
-        _warn_discord(
-            f'ERROR: reddit_leads.py — Notion dedup check returned object_not_found'
-            f' (DB likely deleted, renamed, or no longer shared with the integration).'
-            f' {dedup_errors} dedup failure(s) this run. Samples: {sample_str}.'
-            ' All affected posts skipped. Check logs/errors.jsonl and the'
-            ' NOTION_REDDIT_LEADS_DB_ID secret.',
-            dedup_key='reddit_leads:dedup_object_not_found',
-        )
-        error_log.log_error(
-            'reddit_leads', 'error',
-            'Notion dedup check returned object_not_found — DB likely misconfigured',
-            {
-                'dedup_errors': dedup_errors,
-                'dedup_object_not_found_errors': dedup_object_not_found_errors,
-                'samples': dedup_error_samples,
-            },
-        )
-    elif notion_likely_down:
-        # Hit the consecutive-failure short-circuit.  Distinct alert from
-        # the ``object_not_found`` case because the operator action is
-        # different: this signals an in-flight Notion outage (timeouts,
-        # 5xx, connection errors) rather than a DB misconfiguration.
+    # be silently skipped (no save attempted, no sentinel written). In normal
+    # operation they should be 0; a sustained burst within a single run means
+    # Notion is unreachable and the script will save no new leads until it
+    # recovers. (A misconfigured/deleted DB is caught earlier by the preflight.)
+    if notion_likely_down:
+        # Hit the consecutive-failure short-circuit: Notion is unreachable for
+        # this run (timeouts, 5xx, connection errors, or a mid-run access change).
         sample_str = '; '.join(dedup_error_samples) if dedup_error_samples else 'none'
         _warn_discord(
             f'WARNING: reddit_leads.py — {consecutive_dedup_failures} consecutive'
