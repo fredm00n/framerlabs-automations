@@ -18,3 +18,10 @@ and be implemented.
   the local `http_get`/`http_patch` wrappers now pick the SSL context per host
   (`_ssl_context_for`), applying the cert bypass only to `reddit.com` URLs so
   Notion calls keep default TLS verification. See deferred_improvements.md.
+
+- **2026-06-03** — Self-improvement review found no production failures: the
+  committed `logs/errors.jsonl` is empty. The only error entries visible in this
+  VM's working tree were locally-generated sandbox artifacts (43 × HTTP 403
+  "Blocked by egress policy" — the observe-only VM's own egress restriction, not
+  a Reddit/production failure) and were discarded. Both parsers and the lead
+  filter look healthy; full test suite passes (369 tests). No change warranted.
