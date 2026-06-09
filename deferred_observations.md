@@ -25,3 +25,10 @@ and be implemented.
   "Blocked by egress policy" — the observe-only VM's own egress restriction, not
   a Reddit/production failure) and were discarded. Both parsers and the lead
   filter look healthy; full test suite passes (369 tests). No change warranted.
+
+- **2026-06-09** — Self-improvement review found no production failures: the
+  committed `logs/errors.jsonl` is still empty. The working tree again showed
+  only sandbox artifacts (45 × HTTP 403 "Blocked by egress policy" from a single
+  observe-only startup run spanning 07:07–07:08, plus a matching
+  `state/alert_state-reddit_leads.json` bump) — discarded. Both parsers
+  syntax-check OK and the full test suite passes. No change warranted.
