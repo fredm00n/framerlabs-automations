@@ -32,3 +32,11 @@ and be implemented.
   observe-only startup run spanning 07:07–07:08, plus a matching
   `state/alert_state-reddit_leads.json` bump) — discarded. Both parsers
   syntax-check OK and the full test suite passes. No change warranted.
+
+- **2026-06-11** — Self-improvement review found no production failures: the
+  committed `logs/errors.jsonl` is empty. No errors in the 7-day window, so no
+  log trimming was needed. Both parsers syntax-check OK and the full test suite
+  passes (369 tests). The lead filter and category inference look healthy. No
+  broken parser, no recurring data-losing failure, and no substantive
+  filter/subreddit/category improvement evidenced this session. No change
+  warranted.
