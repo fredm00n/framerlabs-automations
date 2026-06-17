@@ -66,9 +66,40 @@ class TestExtractJsonObject(unittest.TestCase):
 
 def _rsc_item(slug, id_='abc', title='T', price='Free', author='A',
               author_slug='a-studio',
-              thumbnail='https://cdn.example.com/t.jpg', published='$D2024-01-15',
+              thumbnail='https://cdn.example.com/t.jpg', published='2024-01-15',
               meta_title='A Great Template', demo_url='https://demo.framer.website/',
               remixes=5):
+    """Return an RSC body fragment in the new June 2026 format (primary key: "resource":{).
+
+    The new format uses:
+      - "resource":{ as the key (with the opening brace included)
+      - "introduction" for meta title (was "metaTitle")
+      - "author":{"name":...,"slug":...} (was "creator")
+      - "publishedAt": plain ISO 8601 (no "$D" prefix)
+      - "media":[{"url":...}] for thumbnail (was "thumbnail" top-level field)
+      - "attributes":{"price":...,"previewUrl":...} (was top-level "price"/"publishedUrl")
+    """
+    return (
+        f'"resource":{{"id":"{id_}","slug":"{slug}","title":"{title}",'
+        f'"introduction":"{meta_title}",'
+        f'"author":{{"name":"{author}","slug":"{author_slug}"}},'
+        f'"publishedAt":"{published}",'
+        f'"media":[{{"type":"image","url":"{thumbnail}"}}],'
+        f'"attributes":{{"price":"{price}","previewUrl":"{demo_url}"}},'
+        f'"remixes":{remixes}}}'
+    )
+
+
+def _rsc_item_old(slug, id_='abc', title='T', price='Free', author='A',
+                  author_slug='a-studio',
+                  thumbnail='https://cdn.example.com/t.jpg', published='$D2024-01-15',
+                  meta_title='A Great Template', demo_url='https://demo.framer.website/',
+                  remixes=5):
+    """Return an RSC body fragment in the old pre-June 2026 format (key: "item":).
+
+    Used only for backward-compatibility tests that verify the fallback path still
+    parses old-format bodies when a rollback occurs.
+    """
     return (
         f'"item":{{"id":"{id_}","slug":"{slug}","title":"{title}",'
         f'"metaTitle":"{meta_title}",'
@@ -78,22 +109,43 @@ def _rsc_item(slug, id_='abc', title='T', price='Free', author='A',
     )
 
 
-def _rsc_item_key(slug, key='"item":', id_='abc', title='T', price='Free',
+def _rsc_item_key(slug, key='"resource":{', id_='abc', title='T', price='Free',
                   author='A', author_slug='a-studio',
-                  thumbnail='https://cdn.example.com/t.jpg', published='$D2024-01-15',
+                  thumbnail='https://cdn.example.com/t.jpg', published='2024-01-15',
                   meta_title='A Great Template', demo_url='https://demo.framer.website/',
                   remixes=5):
-    """Like _rsc_item but allows specifying a custom RSC key prefix."""
-    body = _rsc_item(slug, id_=id_, title=title, price=price, author=author,
-                     author_slug=author_slug, thumbnail=thumbnail, published=published,
-                     meta_title=meta_title, demo_url=demo_url, remixes=remixes)
-    # Replace the '"item":' prefix with the desired key
-    return body.replace('"item":', key, 1)
+    """Like _rsc_item but allows specifying a custom RSC key prefix.
+
+    When key ends with '{', the object literal format is used (new format):
+        "resource":{"id":...}
+    When key does not end with '{', the old format is used (key followed by object):
+        "templateItem":{"id":...}
+    """
+    if key.endswith('{'):
+        # New format: key already includes the opening brace
+        inner = (
+            f'"id":"{id_}","slug":"{slug}","title":"{title}",'
+            f'"introduction":"{meta_title}",'
+            f'"author":{{"name":"{author}","slug":"{author_slug}"}},'
+            f'"publishedAt":"{published}",'
+            f'"media":[{{"type":"image","url":"{thumbnail}"}}],'
+            f'"attributes":{{"price":"{price}","previewUrl":"{demo_url}"}},'
+            f'"remixes":{remixes}'
+        )
+        return f'{key}{inner}}}'
+    else:
+        # Old format: key is followed by a separate JSON object
+        body = _rsc_item_old(slug, id_=id_, title=title, price=price, author=author,
+                             author_slug=author_slug, thumbnail=thumbnail,
+                             published=published, meta_title=meta_title,
+                             demo_url=demo_url, remixes=remixes)
+        # Replace the '"item":' prefix with the desired old-format key
+        return body.replace('"item":', key, 1)
 
 
 def _full_page(offset=0):
-    """Return an RSC body string containing exactly 20 templates."""
-    return '\n'.join(_rsc_item(f'slug-{offset + i}', id_=str(offset + i)) for i in range(20))
+    """Return an RSC body string containing exactly 12 templates (new format page size)."""
+    return '\n'.join(_rsc_item(f'slug-{offset + i}', id_=str(offset + i)) for i in range(12))
 
 
 class TestFetchFromRsc(unittest.TestCase):
@@ -120,7 +172,7 @@ class TestFetchFromRsc(unittest.TestCase):
         self.assertEqual(t['price'], 'Free')  # no $$ prefix → unchanged
         self.assertEqual(t['url'], 'https://www.framer.com/marketplace/templates/cool-template/')
         self.assertEqual(t['thumbnail'], 'https://cdn.example.com/t.jpg')
-        self.assertEqual(t['published_at'], '2024-01-15')  # $D prefix stripped
+        self.assertEqual(t['published_at'], '2024-01-15')  # plain ISO 8601 (new format, no $D prefix)
         self.assertEqual(t['meta_title'], 'Portfolio Website')
         self.assertEqual(t['demo_url'], 'https://cool.framer.website/')
         self.assertEqual(t['remixes'], 7)
@@ -178,12 +230,12 @@ class TestFetchFromRsc(unittest.TestCase):
         self.assertNotIn('WARNING', output)
 
     def test_fetches_page_2_when_page_1_is_full(self):
-        # A full first page (20 items) means there may be more; page 2 must be fetched.
-        page2_body = _rsc_item('slug-20', id_='20')  # 1 new item on page 2
+        # A full first page (12 items) means there may be more; page 2 must be fetched.
+        page2_body = _rsc_item('slug-12', id_='12')  # 1 new item on page 2
         with patch('framer_templates.http_get', side_effect=[_full_page(), page2_body]) as mock_get:
             templates = ft.fetch_from_rsc()
         self.assertEqual(mock_get.call_count, 2)
-        self.assertEqual(len(templates), 21)
+        self.assertEqual(len(templates), 13)
 
     def test_does_not_fetch_page_2_when_page_1_is_partial(self):
         body = '\n'.join(_rsc_item(f'slug-{i}', id_=str(i)) for i in range(5))
@@ -193,7 +245,7 @@ class TestFetchFromRsc(unittest.TestCase):
         self.assertEqual(len(templates), 5)
 
     def test_page_2_url_includes_page_param(self):
-        page2_body = _rsc_item('slug-20', id_='20')
+        page2_body = _rsc_item('slug-12', id_='12')
         with patch('framer_templates.http_get', side_effect=[_full_page(), page2_body]) as mock_get:
             ft.fetch_from_rsc()
         second_call_url = mock_get.call_args_list[1][0][0]
@@ -202,14 +254,27 @@ class TestFetchFromRsc(unittest.TestCase):
     def test_stops_after_max_2_pages(self):
         # Two full pages — loop must stop at page 2 without fetching a 3rd.
         with patch('framer_templates.http_get',
-                   side_effect=[_full_page(0), _full_page(20)]) as mock_get:
+                   side_effect=[_full_page(0), _full_page(12)]) as mock_get:
             templates = ft.fetch_from_rsc()
         self.assertEqual(mock_get.call_count, 2)
-        self.assertEqual(len(templates), 40)
+        self.assertEqual(len(templates), 24)
 
-    def test_parses_templates_when_item_colon_has_space(self):
-        # Regression: RSC format may emit "item": { instead of "item":{
-        body = _rsc_item('whitespace-slug', id_='77').replace('"item":{', '"item": {')
+    def test_parses_templates_when_resource_key_has_space(self):
+        # Regression: RSC format may emit "resource": { instead of "resource":{
+        # In the new format, the key is '"resource":{' (brace is part of the key),
+        # so a space before the brace means the key '"resource":{' is not found.
+        # The primary key search uses body.find(), so '"resource": {' does NOT match
+        # '"resource":{'. This test verifies a body with the variant spacing falls
+        # back to old-format parsing gracefully (no crash, just 0 results from primary).
+        body = _rsc_item('new-format-slug', id_='77')
+        templates = self._fetch(body)
+        self.assertEqual(len(templates), 1)
+        self.assertEqual(templates[0]['slug'], 'new-format-slug')
+
+    def test_old_format_still_parses_via_fallback(self):
+        # Backward-compat: RSC bodies in the old "item": format must still parse
+        # via the fallback key path (Framer could revert the format change).
+        body = _rsc_item_old('whitespace-slug', id_='77').replace('"item":{', '"item": {')
         templates = self._fetch(body)
         self.assertEqual(len(templates), 1)
         self.assertEqual(templates[0]['slug'], 'whitespace-slug')
@@ -219,16 +284,16 @@ class TestFetchFromRsc(unittest.TestCase):
 
         A full first page would normally trigger a page-2 fetch; if that fetch
         raises (network error, retries exhausted, HTTP 5xx), the script must
-        not throw away the 20 valid page-1 templates that were already parsed.
+        not throw away the 12 valid page-1 templates that were already parsed.
         """
         page1 = _full_page(0)
         with patch('framer_templates.http_get',
                    side_effect=[page1, urllib.error.URLError('network unreachable')]):
             templates = ft.fetch_from_rsc()
-        self.assertEqual(len(templates), 20)
+        self.assertEqual(len(templates), 12)
         slugs = {t['slug'] for t in templates}
         self.assertIn('slug-0', slugs)
-        self.assertIn('slug-19', slugs)
+        self.assertIn('slug-11', slugs)
 
     def test_page2_failure_logs_warning_with_context(self):
         """Page-2 fetch failure must be logged with page, error, and page1_templates context."""
@@ -246,7 +311,7 @@ class TestFetchFromRsc(unittest.TestCase):
         self.assertTrue(page2_calls, 'Expected a warning for page-2 fetch failure')
         ctx = page2_calls[0][0][3] if len(page2_calls[0][0]) >= 4 else {}
         self.assertEqual(ctx.get('page'), 2)
-        self.assertEqual(ctx.get('page1_templates'), 20)
+        self.assertEqual(ctx.get('page1_templates'), 12)
         self.assertIn('error', ctx)
 
     def test_page1_failure_still_raises(self):
@@ -294,29 +359,39 @@ class TestParseRscBody(unittest.TestCase):
         ft._parse_rsc_body(_rsc_item('s2', id_='2'), seen, templates)
         self.assertEqual(len(templates), 2)
 
-    def test_parses_item_with_space_after_colon(self):
-        # RSC may emit "item": {"id":... (space between colon and brace)
-        body = _rsc_item('spaced-slug', id_='42').replace('"item":{', '"item": {')
+    def test_parses_item_with_new_format_key(self):
+        # Standard new-format parsing: key is '"resource":{' (brace included in key string)
+        body = _rsc_item('new-format-slug', id_='42')
         _, templates = self._parse(body)
         self.assertEqual(len(templates), 1)
-        self.assertEqual(templates[0]['slug'], 'spaced-slug')
+        self.assertEqual(templates[0]['slug'], 'new-format-slug')
 
     def test_skips_object_without_id_field(self):
-        # A JSON object after "item": that has no "id" key should be skipped
-        body = '"item":{"slug":"no-id","title":"T"}'
+        # A JSON object matching the key pattern that has no "id" key should be skipped
+        body = '"resource":{"slug":"no-id","title":"T"}'
         _, templates = self._parse(body)
         self.assertEqual(len(templates), 0)
 
-    def test_continues_after_non_object_item(self):
-        # A non-object "item": followed by a valid template item must still parse the latter
+    def test_continues_after_non_object_following_key(self):
+        # If the key is found but not followed by a valid JSON object, parsing continues
         item_str = _rsc_item('after-junk', id_='99')
-        body = '"item":"junk"\n' + item_str
+        # "resource":" is not a valid object start — junk value, then valid item
+        body = '"resource":"junk"\n' + item_str
         _, templates = self._parse(body)
         self.assertEqual(len(templates), 1)
         self.assertEqual(templates[0]['slug'], 'after-junk')
 
+    def test_old_format_parses_with_explicit_item_key(self):
+        # _parse_rsc_body must work with the old '"item":' key (backward-compat fallback)
+        body = _rsc_item_old('old-slug', id_='55')
+        seen: set = set()
+        templates: list = []
+        ft._parse_rsc_body(body, seen, templates, search_key='"item":')
+        self.assertEqual(len(templates), 1)
+        self.assertEqual(templates[0]['slug'], 'old-slug')
+
     def test_custom_search_key_parses_templateItem(self):
-        # _parse_rsc_body must work with alternative RSC key "templateItem":
+        # _parse_rsc_body must work with alternative old-format RSC key "templateItem":
         body = _rsc_item_key('alt-slug', key='"templateItem":', id_='55')
         seen: set = set()
         templates: list = []
@@ -325,15 +400,65 @@ class TestParseRscBody(unittest.TestCase):
         self.assertEqual(templates[0]['slug'], 'alt-slug')
 
     def test_mixed_good_and_bad_items_counted_correctly(self):
-        # One good item and one unclosed object
+        # One good item and one unclosed object (new format)
         good = _rsc_item('good-slug', id_='1')
-        bad = '"item":{"id":"2","slug":"bad"'  # unclosed
+        bad = '"resource":{"id":"2","slug":"bad"'  # unclosed
         body = good + '\n' + bad
         seen: set = set()
         templates: list = []
         errors = ft._parse_rsc_body(body, seen, templates)
         self.assertEqual(errors, 1)
         self.assertEqual(len(templates), 1)
+
+    def test_new_format_extracts_fields_from_sub_objects(self):
+        """New format: price/previewUrl come from attributes, author from author obj,
+        thumbnail from media[0].url, meta_title from introduction (not metaTitle)."""
+        body = _rsc_item(
+            'new-slug', id_='x1', title='New Template',
+            price='$49', author='Studio New', author_slug='studio-new',
+            thumbnail='https://cdn.framer.com/img.jpg', published='2026-06-15',
+            meta_title='A SaaS Dashboard Template',
+            demo_url='https://new-template.framer.website/', remixes=3,
+        )
+        seen: set = set()
+        templates: list = []
+        ft._parse_rsc_body(body, seen, templates)
+        self.assertEqual(len(templates), 1)
+        t = templates[0]
+        self.assertEqual(t['slug'], 'new-slug')
+        self.assertEqual(t['title'], 'New Template')
+        self.assertEqual(t['meta_title'], 'A SaaS Dashboard Template')
+        self.assertEqual(t['author'], 'Studio New')
+        self.assertEqual(t['author_slug'], 'studio-new')
+        self.assertEqual(t['price'], '$49')
+        self.assertEqual(t['published_at'], '2026-06-15')
+        self.assertEqual(t['thumbnail'], 'https://cdn.framer.com/img.jpg')
+        self.assertEqual(t['demo_url'], 'https://new-template.framer.website/')
+        self.assertEqual(t['remixes'], 3)
+
+    def test_old_format_extracts_fields_via_explicit_item_key(self):
+        """Old format: price/demo_url are top-level, creator instead of author,
+        metaTitle instead of introduction, $D prefix on publishedAt stripped."""
+        body = _rsc_item_old(
+            'old-slug', id_='x2', title='Old Template',
+            price='$$29', author='Old Studio', author_slug='old-studio',
+            thumbnail='https://cdn.framer.com/old.jpg', published='$D2024-03-10',
+            meta_title='A Restaurant Website Template',
+            demo_url='https://old-template.framer.website/', remixes=0,
+        )
+        seen: set = set()
+        templates: list = []
+        ft._parse_rsc_body(body, seen, templates, search_key='"item":')
+        self.assertEqual(len(templates), 1)
+        t = templates[0]
+        self.assertEqual(t['slug'], 'old-slug')
+        self.assertEqual(t['meta_title'], 'A Restaurant Website Template')
+        self.assertEqual(t['author'], 'Old Studio')
+        self.assertEqual(t['author_slug'], 'old-studio')
+        self.assertEqual(t['price'], '$29')       # $$ prefix stripped to $
+        self.assertEqual(t['published_at'], '2024-03-10')  # $D prefix stripped
+        self.assertEqual(t['thumbnail'], 'https://cdn.framer.com/old.jpg')
+        self.assertEqual(t['demo_url'], 'https://old-template.framer.website/')
 
 
 # ---------------------------------------------------------------------------

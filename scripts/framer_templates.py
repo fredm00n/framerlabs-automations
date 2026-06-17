@@ -61,8 +61,17 @@ _RSC_HEADERS = {
 # results we try each fallback in order and use whichever produces the most
 # templates.  The winning key is logged so a human can update the primary if
 # needed.
-_RSC_PRIMARY_KEY = '"item":'
-_RSC_FALLBACK_KEYS = ('"templateItem":', '"marketplaceItem":')
+#
+# As of June 2026, Framer changed its RSC payload structure.  Each item in the
+# marketplace list is now emitted as {"resource":{...}} where the resource object
+# carries the template data.  Fields also changed: ``price`` and ``previewUrl``
+# moved into an ``attributes`` sub-object, ``publishedUrl`` was renamed to
+# ``attributes.previewUrl``, ``creator`` was renamed to ``author``, the ``$D``
+# date prefix was dropped (ISO 8601 is emitted directly), and ``thumbnail`` moved
+# to ``media[0].url``.  The old ``"item":`` key is kept as a fallback so we can
+# automatically recover if Framer rolls the format back.
+_RSC_PRIMARY_KEY = '"resource":{'
+_RSC_FALLBACK_KEYS = ('"item":', '"templateItem":', '"marketplaceItem":')
 
 
 def _find_candidate_rsc_keys(body: str, max_results: int = 5) -> list[str]:
@@ -194,19 +203,20 @@ def fetch_from_rsc() -> list[dict]:
     # execution needed. The defuddle approach missed the 1-2 newest templates because
     # they are hydrated after the initial render that defuddle captured.
     #
-    # Pages are cumulative: page=2 returns items 1-40, etc.
-    # We fetch up to 2 pages (40 templates) and stop early when a page adds fewer than
-    # 20 new items, which means we've reached the last page.
+    # Pages are cumulative: page=2 returns items 1-24, etc.
+    # We fetch up to 2 pages (24 templates) and stop early when a page adds fewer than
+    # 12 new items, which means we've reached the last page.  (As of June 2026,
+    # Framer's RSC payload returns 12 templates per page; the old format returned 20.)
     #
     # If page 1 succeeds but page 2 fails (network error, HTTP 5xx after retries,
     # read timeout, etc.) we keep the page-1 data and continue — there is no reason
-    # to throw away 20 valid templates because of a transient failure on the second
+    # to throw away 12 valid templates because of a transient failure on the second
     # page.  Only a page-1 failure is treated as fatal, since without page 1 we have
     # no data at all to compare against the seen-slugs set.  This mirrors the
     # general principle used elsewhere in the codebase (e.g. ``reddit_leads.py``
     # tolerates a subset of subreddit-feed failures and only escalates when the
     # majority fail) and means a single bad fetch cannot cost us a discovery
-    # window for the newest 20 templates — exactly the ones a 15-min cron is
+    # window for the newest 12 templates — exactly the ones a 15-min cron is
     # most likely to find first.
     seen: set[str] = set()
     templates: list[dict] = []
@@ -258,7 +268,7 @@ def fetch_from_rsc() -> list[dict]:
         total_parse_errors += _parse_rsc_body(body, seen, templates, _RSC_PRIMARY_KEY)
         new_this_page = len(templates) - count_before
 
-        if new_this_page < 20:
+        if new_this_page < 12:
             break
 
     # If the primary key produced fewer than 5 results, try fallback keys across
@@ -336,38 +346,49 @@ def fetch_from_rsc() -> list[dict]:
 
 
 def _parse_rsc_body(body: str, seen: set, templates: list,
-                    search_key: str = '"item":') -> int:
+                    search_key: str = '"resource":{') -> int:
     """Parse template items from an RSC body, appending new ones to templates in-place.
 
-    The RSC stream may emit ``"item":{"id":`` with or without whitespace between
-    the colon and the opening brace (e.g. ``"item": {"id":``).  We search for the
-    key prefix (``search_key``) and then skip any intervening whitespace before
-    locating the ``{`` that starts the JSON object passed to
-    ``_extract_json_object``.
+    Supports two RSC payload formats:
 
-    ``search_key`` defaults to ``'"item":'`` (the primary Framer RSC key) but
-    callers may supply an alternative (e.g. ``'"templateItem":'``) to probe
-    fallback keys when the primary yields too few results.
+    **New format (June 2026+):** Each item in the marketplace list is wrapped as
+    ``{"resource":{...}}`` where the resource object contains ``id``, ``slug``,
+    ``title``, ``introduction`` (= meta title), ``author`` (object), ``publishedAt``
+    (plain ISO 8601, no ``$D`` prefix), ``media`` (array, first element is the
+    thumbnail), and ``attributes`` (object containing ``price`` and ``previewUrl``).
+    The search key ``'"resource":{'`` already includes the opening brace, so the
+    JSON object starts at ``idx + len(search_key) - 1``.
+
+    **Old format (pre-June 2026):** Items were emitted directly as ``"item":{...}``
+    (or ``'"templateItem":``, ``'"marketplaceItem":``).  In this format the key
+    ends with ``:`` and is followed by optional whitespace before the ``{``.  The
+    parser detects the old format by checking whether ``search_key`` ends with
+    ``'{'`` (new) or not (old).
 
     Returns the number of JSON parse failures (``ValueError`` from
     ``_extract_json_object``).  A non-zero value indicates that the RSC stream
     contained objects that looked like template items but could not be parsed —
     useful for diagnosing format changes without flooding the error log.
     """
-    search = search_key
+    # New format: search key ends with '{' (the opening brace is part of the key)
+    new_format = search_key.endswith('{')
     pos = 0
     parse_errors = 0
     while True:
-        idx = body.find(search, pos)
+        idx = body.find(search_key, pos)
         if idx == -1:
             break
-        # Skip optional whitespace between the key and the opening brace
-        obj_start = idx + len(search)
-        while obj_start < len(body) and body[obj_start] in ' \t\r\n':
-            obj_start += 1
-        if obj_start >= len(body) or body[obj_start] != '{':
-            pos = idx + 1
-            continue
+        if new_format:
+            # The '{' is the last character of search_key — the object starts there
+            obj_start = idx + len(search_key) - 1
+        else:
+            # Old format: skip optional whitespace between the key colon and '{'
+            obj_start = idx + len(search_key)
+            while obj_start < len(body) and body[obj_start] in ' \t\r\n':
+                obj_start += 1
+            if obj_start >= len(body) or body[obj_start] != '{':
+                pos = idx + 1
+                continue
         try:
             item = _extract_json_object(body, obj_start)
             if 'id' not in item:
@@ -377,25 +398,46 @@ def _parse_rsc_body(body: str, seen: set, templates: list,
             slug = item.get('slug', '')
             if slug and slug not in seen:
                 seen.add(slug)
-                price_raw = item.get('price', '')
-                # RSC encodes literal "$" as "$$" — strip the escape prefix
-                price = price_raw[1:] if price_raw.startswith('$$') else price_raw
-                creator = item.get('creator') or {}
-                author = creator.get('name', '')
-                author_slug = creator.get('slug', '')
-                # RSC encodes Date objects with a "$D" prefix — strip it
-                published_raw = item.get('publishedAt', '')
-                published_at = published_raw[2:] if published_raw.startswith('$D') else published_raw
+                if new_format:
+                    # New RSC format (June 2026+): fields moved into sub-objects
+                    attrs = item.get('attributes') or {}
+                    price_raw = attrs.get('price') or ''
+                    author_obj = item.get('author') or {}
+                    author = author_obj.get('name', '')
+                    author_slug = author_obj.get('slug', '')
+                    # publishedAt is now plain ISO 8601 — no "$D" prefix to strip
+                    published_at = item.get('publishedAt', '')
+                    media = item.get('media') or []
+                    thumbnail = media[0].get('url', '') if media else ''
+                    demo_url = attrs.get('previewUrl', '')
+                    meta_title = item.get('introduction', '')
+                else:
+                    # Old RSC format (pre-June 2026)
+                    price_raw = item.get('price', '')
+                    creator = item.get('creator') or {}
+                    author = creator.get('name', '')
+                    author_slug = creator.get('slug', '')
+                    # RSC encoded Date objects with a "$D" prefix — strip it
+                    published_raw = item.get('publishedAt', '')
+                    published_at = (
+                        published_raw[2:] if published_raw.startswith('$D')
+                        else published_raw
+                    )
+                    thumbnail = item.get('thumbnail', '')
+                    demo_url = item.get('publishedUrl', '')
+                    meta_title = item.get('metaTitle', '')
+                # RSC encodes literal "$" as "$$" in string values — strip it
+                price = price_raw[1:] if isinstance(price_raw, str) and price_raw.startswith('$$') else (price_raw or '')
                 templates.append({
                     'slug': slug,
                     'title': item.get('title', ''),
-                    'meta_title': item.get('metaTitle', ''),
+                    'meta_title': meta_title,
                     'author': author,
                     'author_slug': author_slug,
                     'price': price,
                     'url': f'https://www.framer.com/marketplace/templates/{slug}/',
-                    'demo_url': item.get('publishedUrl', ''),
-                    'thumbnail': item.get('thumbnail', ''),
+                    'demo_url': demo_url,
+                    'thumbnail': thumbnail,
                     'published_at': published_at,
                     'remixes': item.get('remixes') or 0,
                 })

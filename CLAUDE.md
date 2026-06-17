@@ -128,7 +128,8 @@ Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort
 - **Category inference:** categories are inferred from template title/meta_title via keyword matching (e.g. "Restaurant" → Food & Dining, "SaaS" → SaaS & Tech). Keywords are matched as whole words (`\b`-anchored, precompiled regexes) so short keywords like `'ai'` and `'app'` don't match inside unrelated words (e.g. "retail", "email", "wrapper"). Categories are not available in the Framer RSC payload. The inferred category is stored as a `select` field in Notion.
 - **First run:** seeds the DB silently — no Discord/X notifications
 - **Fields tracked:** title, slug, URL, author, author URL, price, category, discovered datetime, published datetime
-- **Pagination:** fetches up to 2 pages (40 templates) per run; pages are cumulative (`?page=N` returns items 1–N×20), stops early when a page yields fewer than 20 new items
+- **Pagination:** fetches up to 2 pages (24 templates) per run; pages are cumulative (`?page=N` returns items 1–N×12), stops early when a page yields fewer than 12 new items
+- **RSC format (June 2026+):** Framer changed the RSC payload structure. Items are now emitted as `{"resource":{...}}` with `attributes.price`, `attributes.previewUrl`, `author.name/slug`, `media[0].url` for thumbnail, `introduction` for meta title, and plain ISO 8601 `publishedAt` (no `$D` prefix). The old `"item":` key and field layout are kept as an automatic fallback so the parser recovers if Framer rolls back the format change.
 
 **Deferred improvements** (still open):
 - RSC format fragility — Framer could change the response structure without notice; fallback keys and diagnostics exist but a completely new encoding would need manual intervention
