@@ -120,15 +120,16 @@ GitHub Actions runs this automatically on every pull request (see `.github/workf
 ## Scripts
 
 ### `scripts/framer_templates.py`
-Monitors [Framer Marketplace](https://www.framer.com/marketplace/templates/?sort=recent) for new templates.
+Monitors [Framer Marketplace](https://www.framer.com/community/marketplace/templates/?sort=newest) for new templates.
 
-- **Source:** Framer's Next.js RSC endpoint — fetched directly with `Rsc: 1` header, returns structured component data including all templates sorted by recent (no headless browser needed)
+- **Source:** Framer's Next.js RSC endpoint — fetched directly with `Rsc: 1` header, returns structured component data including all templates sorted by newest (no headless browser needed)
+- **Marketplace URLs (June 2026 upgrade):** The marketplace moved under a `/community/` path prefix. The script builds every link it emits against `https://www.framer.com/community/marketplace/...` (centralised in `_MARKETPLACE_*` constants). The old `/marketplace/...` paths only 301-redirect for templates/listings and **404 for author profiles**, so the `/community/` paths must be used directly.
 - **State:** Notion DB `Framer Templates` (ID in `NOTION_DATABASE_ID`)
 - **Notifications:** Discord one detail embed per template followed by a grouped summary embed (by category) at the end of the batch, so the recap sits at the bottom of the channel as a quick index; optionally posts to X/Twitter (skipped if credentials not set)
 - **Category inference:** categories are inferred from template title/meta_title via keyword matching (e.g. "Restaurant" → Food & Dining, "SaaS" → SaaS & Tech). Keywords are matched as whole words (`\b`-anchored, precompiled regexes) so short keywords like `'ai'` and `'app'` don't match inside unrelated words (e.g. "retail", "email", "wrapper"). Categories are not available in the Framer RSC payload. The inferred category is stored as a `select` field in Notion.
 - **First run:** seeds the DB silently — no Discord/X notifications
 - **Fields tracked:** title, slug, URL, author, author URL, price, category, discovered datetime, published datetime
-- **Pagination:** fetches up to 2 pages (24 templates) per run; pages are cumulative (`?page=N` returns items 1–N×12), stops early when a page yields fewer than 12 new items
+- **Pagination:** attempts up to 2 pages per run and stops early when a page yields fewer than 12 new items. Since the June 2026 upgrade the RSC endpoint ignores the `?page=N` param and always returns the newest 12 (the marketplace loads "more" client-side), so in practice each run fetches the newest 12 templates — ample headroom for a 15-min cron. The page-loop is retained as-is: it self-limits (page 2 adds 0 new items → early stop) and would auto-recover if Framer restores cumulative paging.
 - **RSC format (June 2026+):** Framer changed the RSC payload structure. Items are now emitted as `{"resource":{...}}` with `attributes.price`, `attributes.previewUrl`, `author.name/slug`, `media[0].url` for thumbnail, `introduction` for meta title, and plain ISO 8601 `publishedAt` (no `$D` prefix). The old `"item":` key and field layout are kept as an automatic fallback so the parser recovers if Framer rolls back the format change.
 
 **Deferred improvements** (still open):

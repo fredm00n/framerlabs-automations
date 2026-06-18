@@ -42,6 +42,24 @@ _ALERT_SUPPRESS_MINUTES = 60
 
 
 # ---------------------------------------------------------------------------
+# Marketplace URLs
+# ---------------------------------------------------------------------------
+# The June 2026 marketplace upgrade moved the community marketplace under a
+# ``/community/`` path prefix.  The old ``/marketplace/...`` URLs are no longer
+# canonical: template and listing pages 301-redirect to their ``/community/``
+# equivalents, but author *profile* pages now return a hard 404
+# (``/marketplace/profiles/<slug>/`` → 404 while
+# ``/community/marketplace/profiles/<slug>/`` → 200).  We build every link we
+# post to Discord/Notion against the ``/community/`` paths directly so author
+# profile links resolve and the rest don't depend on redirects that may be
+# removed.  Centralised here so a future path change is a one-line edit.
+_MARKETPLACE_BASE = 'https://www.framer.com/community/marketplace'
+_MARKETPLACE_TEMPLATES_URL = f'{_MARKETPLACE_BASE}/templates/'
+_MARKETPLACE_LISTING_URL = f'{_MARKETPLACE_TEMPLATES_URL}?sort=newest'
+_MARKETPLACE_PROFILE_URL = f'{_MARKETPLACE_BASE}/profiles/'
+
+
+# ---------------------------------------------------------------------------
 # Fetching & parsing
 # ---------------------------------------------------------------------------
 
@@ -225,7 +243,7 @@ def fetch_from_rsc() -> list[dict]:
 
     for page in range(1, 3):
         print(f'Fetching Framer marketplace via RSC (page {page})...')
-        url = 'https://www.framer.com/marketplace/templates/?sort=recent'
+        url = _MARKETPLACE_LISTING_URL
         if page > 1:
             url += f'&page={page}'
         try:
@@ -435,7 +453,7 @@ def _parse_rsc_body(body: str, seen: set, templates: list,
                     'author': author,
                     'author_slug': author_slug,
                     'price': price,
-                    'url': f'https://www.framer.com/marketplace/templates/{slug}/',
+                    'url': f'{_MARKETPLACE_TEMPLATES_URL}{slug}/',
                     'demo_url': demo_url,
                     'thumbnail': thumbnail,
                     'published_at': published_at,
@@ -608,7 +626,7 @@ def save_to_notion(template: dict) -> None:
     if template.get('thumbnail'):
         props['Thumbnail'] = {'url': template['thumbnail']}
     if template.get('author_slug'):
-        props['Author URL'] = {'url': f'https://www.framer.com/marketplace/profiles/{template["author_slug"]}/'}
+        props['Author URL'] = {'url': f'{_MARKETPLACE_PROFILE_URL}{template["author_slug"]}/'}
 
     try:
         http_post(
@@ -713,7 +731,7 @@ def _build_embed(template: dict) -> dict:
         # slug (lowercase-alphanumeric + hyphens) so the URL segment is safe,
         # but we still defensively escape ``)`` in the URL for symmetry with
         # the demo-link path below.
-        profile_url = f"https://www.framer.com/marketplace/profiles/{author_slug}/"
+        profile_url = f"{_MARKETPLACE_PROFILE_URL}{author_slug}/"
         author_text = f"[{_escape_md_link_text(author)}]({_escape_md_link_url(profile_url)})"
     else:
         author_text = author
@@ -799,7 +817,7 @@ def _build_summary_embed(templates: list[dict]) -> dict:
         break  # truncation triggered
     return {
         'title': f'{n} new Framer {noun}',
-        'url': 'https://www.framer.com/marketplace/templates/?sort=recent',
+        'url': _MARKETPLACE_LISTING_URL,
         'description': '\n'.join(lines).rstrip(),
         'color': 0x5865F2,
     }
@@ -958,7 +976,7 @@ def _build_tweet_text(templates: list[dict]) -> str:
     else:
         intro = f'{n} new Framer template{"s" if n != 1 else ""} just dropped.'
 
-    footer = '\nframer.com/marketplace/templates'
+    footer = '\nframer.com/community/marketplace/templates'
     # Build template lines, truncating to fit 280 chars
     lines: list[str] = []
     for t in templates:

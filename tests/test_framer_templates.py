@@ -170,7 +170,7 @@ class TestFetchFromRsc(unittest.TestCase):
         self.assertEqual(t['author'], 'John Doe')
         self.assertEqual(t['author_slug'], 'john-doe')
         self.assertEqual(t['price'], 'Free')  # no $$ prefix → unchanged
-        self.assertEqual(t['url'], 'https://www.framer.com/marketplace/templates/cool-template/')
+        self.assertEqual(t['url'], 'https://www.framer.com/community/marketplace/templates/cool-template/')
         self.assertEqual(t['thumbnail'], 'https://cdn.example.com/t.jpg')
         self.assertEqual(t['published_at'], '2024-01-15')  # plain ISO 8601 (new format, no $D prefix)
         self.assertEqual(t['meta_title'], 'Portfolio Website')
@@ -187,6 +187,19 @@ class TestFetchFromRsc(unittest.TestCase):
         body = _rsc_item('dup', id_='1') + '\n' + _rsc_item('dup', id_='2')
         templates = self._fetch(body)
         self.assertEqual(len(templates), 1)
+
+    def test_fetches_community_marketplace_listing_url(self):
+        # The June 2026 marketplace upgrade moved the listing under /community/.
+        # Page 1 must be fetched from the /community/ listing URL sorted by newest;
+        # the old /marketplace/...?sort=recent path is no longer canonical.
+        body = _rsc_item('only-one')
+        with patch('framer_templates.http_get', return_value=body) as mock_get:
+            ft.fetch_from_rsc()
+        first_url = mock_get.call_args_list[0][0][0]
+        self.assertEqual(
+            first_url,
+            'https://www.framer.com/community/marketplace/templates/?sort=newest',
+        )
 
     def test_skips_items_without_slug(self):
         body = _rsc_item('', id_='1')
@@ -691,7 +704,7 @@ class TestFetchFromRscLineTypeLogging(unittest.TestCase):
 def _template(title='T', meta_title='', slug='s', price='Free', author='A'):
     return {
         'title': title, 'meta_title': meta_title, 'slug': slug,
-        'url': f'https://www.framer.com/marketplace/templates/{slug}/',
+        'url': f'https://www.framer.com/community/marketplace/templates/{slug}/',
         'author': author, 'author_slug': '', 'price': price,
         'thumbnail': '', 'published_at': '', 'demo_url': '', 'remixes': 0,
     }
@@ -829,7 +842,7 @@ class TestGetSeenSlugs(unittest.TestCase):
 _BASE_TEMPLATE = {
     'title': 'My Template',
     'slug': 'my-template',
-    'url': 'https://www.framer.com/marketplace/templates/my-template/',
+    'url': 'https://www.framer.com/community/marketplace/templates/my-template/',
     'author': 'Alice',
     'author_slug': '',
     'price': 'Free',
@@ -927,7 +940,7 @@ class TestSaveToNotion(unittest.TestCase):
         self.assertIn('Author URL', props)
         self.assertEqual(
             props['Author URL']['url'],
-            'https://www.framer.com/marketplace/profiles/alice-studio/',
+            'https://www.framer.com/community/marketplace/profiles/alice-studio/',
         )
 
     def test_400_without_thumbnail_reraises(self):
@@ -1045,7 +1058,7 @@ class TestSaveToNotion(unittest.TestCase):
 
 _DISCORD_TEMPLATE = {
     'title': 'Test Template',
-    'url': 'https://www.framer.com/marketplace/templates/test/',
+    'url': 'https://www.framer.com/community/marketplace/templates/test/',
     'author': 'Bob',
     'author_slug': 'bob-studio',
     'price': '$10',
@@ -1058,12 +1071,12 @@ class TestBuildEmbed(unittest.TestCase):
     def test_basic_embed_structure(self):
         embed = ft._build_embed(_DISCORD_TEMPLATE)
         self.assertEqual(embed['title'], 'Test Template')
-        self.assertEqual(embed['url'], 'https://www.framer.com/marketplace/templates/test/')
+        self.assertEqual(embed['url'], 'https://www.framer.com/community/marketplace/templates/test/')
         self.assertEqual(embed['color'], 0x5865F2)
 
     def test_description_includes_author_link(self):
         embed = ft._build_embed(_DISCORD_TEMPLATE)
-        self.assertIn('[Bob](https://www.framer.com/marketplace/profiles/bob-studio/)', embed['description'])
+        self.assertIn('[Bob](https://www.framer.com/community/marketplace/profiles/bob-studio/)', embed['description'])
         self.assertIn('**$10**', embed['description'])
 
     def test_includes_image_when_thumbnail_present(self):
@@ -1079,7 +1092,7 @@ class TestBuildEmbed(unittest.TestCase):
         t = {**_DISCORD_TEMPLATE, 'author': 'Jane [Studio]'}
         embed = ft._build_embed(t)
         self.assertIn(
-            r'[Jane \[Studio\]](https://www.framer.com/marketplace/profiles/bob-studio/)',
+            r'[Jane \[Studio\]](https://www.framer.com/community/marketplace/profiles/bob-studio/)',
             embed['description'],
         )
 
@@ -1390,12 +1403,12 @@ class TestNotifyDiscordBatchRateLimitPacing(unittest.TestCase):
 _TEMPLATES = [
     {
         'slug': 'template-a', 'title': 'Template A',
-        'url': 'https://www.framer.com/marketplace/templates/template-a/',
+        'url': 'https://www.framer.com/community/marketplace/templates/template-a/',
         'author': 'Alice', 'author_slug': '', 'price': 'Free', 'thumbnail': '', 'published_at': '',
     },
     {
         'slug': 'template-b', 'title': 'Template B',
-        'url': 'https://www.framer.com/marketplace/templates/template-b/',
+        'url': 'https://www.framer.com/community/marketplace/templates/template-b/',
         'author': 'Bob', 'author_slug': '', 'price': '$10', 'thumbnail': '', 'published_at': '',
     },
 ]
@@ -1697,7 +1710,7 @@ class TestBuildTweetText(unittest.TestCase):
         templates = [_template(title=f'Template {i}', slug=f's{i}') for i in range(5)]
         text = ft._build_tweet_text(templates)
         self.assertLessEqual(len(text), 280)
-        self.assertIn('framer.com/marketplace', text)
+        self.assertIn('framer.com/community/marketplace', text)
 
     def test_truncation_with_many_templates(self):
         templates = [_template(title=f'A Very Long Template Name {i}', slug=f's{i}', price='$99')
@@ -1806,7 +1819,7 @@ class TestSaveShortCircuit(unittest.TestCase):
         return [
             {
                 'slug': f'slug-{i}', 'title': f'Template {i}',
-                'url': f'https://www.framer.com/marketplace/templates/slug-{i}/',
+                'url': f'https://www.framer.com/community/marketplace/templates/slug-{i}/',
                 'author': 'A', 'author_slug': '', 'price': 'Free',
                 'thumbnail': '', 'published_at': '',
             }
