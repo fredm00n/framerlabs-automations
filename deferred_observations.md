@@ -40,3 +40,16 @@ and be implemented.
   broken parser, no recurring data-losing failure, and no substantive
   filter/subreddit/category improvement evidenced this session. No change
   warranted.
+
+- **2026-06-18** — Self-improvement review: `logs/errors.jsonl` contains 1785
+  entries in the 7-day window. The framer_templates parser logged 5 RSC
+  parse failures on June 16-17 (spanning ~12 hours), all resolving
+  automatically — the RSC endpoint returned 0 templates for those runs but
+  recovered without any code change; the candidate-key diagnostic correctly
+  identified `"resource":` as present during those hours, indicating a
+  temporary Framer deployment issue rather than a structural format change.
+  The script is working correctly now (12 templates parsed in today's run).
+  The remaining 1780 entries are reddit_leads HTTP 429s (rate-limiting from
+  Reddit's RSS endpoint) — the existing retry, early-abort, and Retry-After
+  logic is handling these correctly. No data-losing failure and no code fix
+  warranted. Full test suite passes (373 tests). No change warranted.
