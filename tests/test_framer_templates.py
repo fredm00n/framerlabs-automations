@@ -148,6 +148,31 @@ def _full_page(offset=0):
     return '\n'.join(_rsc_item(f'slug-{offset + i}', id_=str(offset + i)) for i in range(12))
 
 
+def _data_array_item(slug, id_='1', title='T', price=None, author='A',
+                     author_slug='a-studio', thumbnail='https://cdn.example.com/t.jpg',
+                     published='2026-06-20T10:00:00.000Z', meta_title='Meta Title',
+                     demo_url='https://demo.framer.website/'):
+    """Return a dict in the June-2026 embedded ``data`` array template shape.
+
+    Each newest-grid element is a full template object carrying ``type":"template"``
+    and an ``attributes`` sub-object whose ``price`` is a *number* (or ``null`` for
+    a free template) — unlike the ``"resource":{...}`` featured blocks where the
+    price is a string.
+    """
+    return {
+        'id': id_, 'slug': slug, 'title': title, 'introduction': meta_title,
+        'author': {'name': author, 'slug': author_slug},
+        'media': [{'type': 'image', 'url': thumbnail}],
+        'publishedAt': published, 'type': 'template',
+        'attributes': {'price': price, 'previewUrl': demo_url},
+    }
+
+
+def _rsc_data_array_body(items):
+    """Wrap data-array template dicts in an RSC fragment: ``...,"data":[...],...``."""
+    return '5:["$","div",null,{"data":' + json.dumps(items) + '}]'
+
+
 class TestFetchFromRsc(unittest.TestCase):
 
     def _fetch(self, body):
@@ -1940,6 +1965,256 @@ class TestObserveOnlyGate(unittest.TestCase):
             with patch('framer_templates.http_post') as post_mock:
                 ft.notify_discord_batch([{'title': 'T', 'slug': 's', 'url': 'u'}])
         post_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _extract_json_array
+# ---------------------------------------------------------------------------
+
+class TestExtractJsonArray(unittest.TestCase):
+
+    def test_simple_array(self):
+        self.assertEqual(ft._extract_json_array('[1,2,3]', 0), [1, 2, 3])
+
+    def test_array_of_objects(self):
+        self.assertEqual(ft._extract_json_array('[{"a":1},{"b":2}]', 0), [{'a': 1}, {'b': 2}])
+
+    def test_nested_arrays(self):
+        self.assertEqual(ft._extract_json_array('[[1],[2,[3]]]', 0), [[1], [2, [3]]])
+
+    def test_string_containing_brackets(self):
+        # Brackets inside string literals must not affect depth counting.
+        self.assertEqual(ft._extract_json_array('["a]b","c["]', 0), ['a]b', 'c['])
+
+    def test_non_zero_start_position(self):
+        self.assertEqual(ft._extract_json_array('xx[9]', 2), [9])
+
+    def test_unterminated_array_returns_none(self):
+        self.assertIsNone(ft._extract_json_array('[1,2', 0))
+
+
+# ---------------------------------------------------------------------------
+# _new_format_template
+# ---------------------------------------------------------------------------
+
+class TestNewFormatTemplate(unittest.TestCase):
+
+    def test_numeric_price_stringified(self):
+        # data-array prices are numbers (e.g. 39) — must be coerced to a string.
+        t = ft._new_format_template(_data_array_item('s', price=39))
+        self.assertEqual(t['price'], '39')
+
+    def test_null_price_becomes_empty_string(self):
+        t = ft._new_format_template(_data_array_item('s', price=None))
+        self.assertEqual(t['price'], '')
+
+    def test_double_dollar_string_price_stripped(self):
+        # The featured "resource":{...} path encodes a literal "$" as "$$".
+        t = ft._new_format_template({'slug': 's', 'attributes': {'price': '$$49'}})
+        self.assertEqual(t['price'], '$49')
+
+    def test_plain_string_price_unchanged(self):
+        t = ft._new_format_template({'slug': 's', 'attributes': {'price': 'Free'}})
+        self.assertEqual(t['price'], 'Free')
+
+    def test_maps_core_fields(self):
+        t = ft._new_format_template(_data_array_item(
+            'cool', title='Cool', author='Jane', author_slug='jane',
+            meta_title='SaaS Dashboard', published='2026-06-20T12:00:00.000Z',
+            thumbnail='https://x/y.jpg', demo_url='https://d.framer.website/'))
+        self.assertEqual(t['title'], 'Cool')
+        self.assertEqual(t['meta_title'], 'SaaS Dashboard')
+        self.assertEqual(t['author'], 'Jane')
+        self.assertEqual(t['author_slug'], 'jane')
+        self.assertEqual(t['published_at'], '2026-06-20T12:00:00.000Z')
+        self.assertEqual(t['thumbnail'], 'https://x/y.jpg')
+        self.assertEqual(t['demo_url'], 'https://d.framer.website/')
+        self.assertEqual(
+            t['url'], 'https://www.framer.com/community/marketplace/templates/cool/')
+
+    def test_missing_attributes_and_media_are_safe(self):
+        t = ft._new_format_template({'slug': 's', 'title': 'T'})
+        self.assertEqual(t['price'], '')
+        self.assertEqual(t['demo_url'], '')
+        self.assertEqual(t['thumbnail'], '')
+        self.assertEqual(t['author'], '')
+
+
+# ---------------------------------------------------------------------------
+# _parse_rsc_data_array
+# ---------------------------------------------------------------------------
+
+class TestParseRscDataArray(unittest.TestCase):
+
+    def _parse(self, body, seen=None):
+        seen = set() if seen is None else seen
+        templates: list = []
+        errs = ft._parse_rsc_data_array(body, seen, templates)
+        return seen, templates, errs
+
+    def test_parses_templates_preserving_newest_first_order(self):
+        body = _rsc_data_array_body([
+            _data_array_item('a', id_='1', published='2026-06-20T10:00:00Z'),
+            _data_array_item('b', id_='2', published='2026-06-19T10:00:00Z'),
+        ])
+        _, templates, _ = self._parse(body)
+        self.assertEqual([t['slug'] for t in templates], ['a', 'b'])
+
+    def test_ignores_non_template_array_elements(self):
+        items = [_data_array_item('a', id_='1'),
+                 {'type': 'category', 'slug': 'agency', 'id': 'c'}]
+        _, templates, _ = self._parse(_rsc_data_array_body(items))
+        self.assertEqual([t['slug'] for t in templates], ['a'])
+
+    def test_dedupes_against_seen(self):
+        body = _rsc_data_array_body([_data_array_item('dup', id_='1')])
+        _, templates, _ = self._parse(body, seen={'dup'})
+        self.assertEqual(len(templates), 0)
+
+    def test_skips_data_key_followed_by_non_array(self):
+        # ``"data":{...}`` (an object, not an array) must be skipped without error.
+        body = '"data":{"slug":"x","type":"template"}'
+        _, templates, errs = self._parse(body)
+        self.assertEqual(len(templates), 0)
+        self.assertEqual(errs, 0)
+
+    def test_numeric_and_free_prices(self):
+        body = _rsc_data_array_body([
+            _data_array_item('paid', id_='1', price=39),
+            _data_array_item('free', id_='2', price=None),
+        ])
+        _, templates, _ = self._parse(body)
+        prices = {t['slug']: t['price'] for t in templates}
+        self.assertEqual(prices['paid'], '39')
+        self.assertEqual(prices['free'], '')
+
+
+# ---------------------------------------------------------------------------
+# fetch_from_rsc — embedded data array (the real newest-templates grid)
+# ---------------------------------------------------------------------------
+
+class TestFetchFromRscDataArray(unittest.TestCase):
+    """The June-2026 redesign embeds the actual newest grid as a ``"data":[...]``
+    array; the parser must read it (the pre-fix code only saw the 12 featured
+    ``"resource":{...}`` blocks and missed every newly published template)."""
+
+    def test_data_array_templates_are_captured(self):
+        data_items = [
+            _data_array_item(f'new-{i}', id_=str(i),
+                             published=f'2026-06-20T{10 + i:02d}:00:00Z')
+            for i in range(6)
+        ]
+        body = _rsc_data_array_body(data_items)
+        with patch('framer_templates.http_get', return_value=body):
+            templates = ft.fetch_from_rsc()
+        slugs = {t['slug'] for t in templates}
+        for i in range(6):
+            self.assertIn(f'new-{i}', slugs)
+
+    def test_data_array_and_featured_resource_both_captured(self):
+        # The newest grid (data array) plus a curated featured block must both
+        # appear, deduplicated by slug.
+        data_items = [_data_array_item(f'new-{i}', id_=str(i)) for i in range(6)]
+        body = _rsc_data_array_body(data_items) + '\n' + _rsc_item('featured-x', id_='99')
+        with patch('framer_templates.http_get', return_value=body):
+            templates = ft.fetch_from_rsc()
+        slugs = {t['slug'] for t in templates}
+        self.assertIn('featured-x', slugs)
+        self.assertIn('new-0', slugs)
+
+    def test_template_in_both_data_array_and_resource_block_not_duplicated(self):
+        item = _data_array_item('shared', id_='1')
+        body = _rsc_data_array_body([item]) + '\n' + _rsc_item('shared', id_='1')
+        with patch('framer_templates.http_get', return_value=body):
+            templates = ft.fetch_from_rsc()
+        self.assertEqual(sum(1 for t in templates if t['slug'] == 'shared'), 1)
+
+    def test_newest_first_order_preserved_end_to_end(self):
+        data_items = [
+            _data_array_item(f'n{i}', id_=str(i),
+                             published=f'2026-06-20T{20 - i:02d}:00:00Z')
+            for i in range(6)
+        ]
+        body = _rsc_data_array_body(data_items)
+        with patch('framer_templates.http_get', return_value=body):
+            templates = ft.fetch_from_rsc()
+        self.assertEqual([t['slug'] for t in templates[:6]],
+                         ['n0', 'n1', 'n2', 'n3', 'n4', 'n5'])
+
+
+# ---------------------------------------------------------------------------
+# main — notification cap / backlog backfill
+# ---------------------------------------------------------------------------
+
+class TestNotifyCap(unittest.TestCase):
+    """A backlog (e.g. the first run after this parser fix) must not flood Discord:
+    only the newest _MAX_NOTIFY_PER_RUN are announced; the rest are saved silently."""
+
+    def setUp(self):
+        os.environ['NOTION_TOKEN'] = 'test_token'
+        os.environ['NOTION_DATABASE_ID'] = 'test_db_id'
+        os.environ['DISCORD_WEBHOOK_URL_TEMPLATES'] = 'https://discord.com/api/webhooks/test'
+
+    def _templates(self, n):
+        # Newest-first: s0 is the newest.
+        return [
+            {'slug': f's{i}', 'title': f'T{i}',
+             'url': f'https://www.framer.com/community/marketplace/templates/s{i}/',
+             'author': 'A', 'author_slug': '', 'price': 'Free',
+             'thumbnail': '', 'published_at': ''}
+            for i in range(n)
+        ]
+
+    def _run(self, templates, seen_slugs):
+        save = MagicMock()
+        notify = MagicMock()
+        x = MagicMock()
+        summary = MagicMock()
+        with patch('framer_templates.fetch_framer_templates', return_value=templates), \
+             patch('framer_templates.get_seen_slugs', return_value=seen_slugs), \
+             patch('framer_templates.save_to_notion', save), \
+             patch('framer_templates.notify_discord_batch', notify), \
+             patch('framer_templates.post_to_x', x), \
+             patch('framer_templates._warn_discord'), \
+             patch('framer_templates._write_summary', summary), \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            ft.main()
+        return save, notify, x, summary
+
+    def test_backlog_saves_all_but_notifies_only_newest_cap(self):
+        templates = self._templates(25)
+        save, notify, x, _ = self._run(templates, {'existing'})
+        # Every template is still persisted to Notion.
+        self.assertEqual(save.call_count, 25)
+        # Only the newest _MAX_NOTIFY_PER_RUN are announced.
+        notify.assert_called_once()
+        notified = notify.call_args[0][0]
+        self.assertEqual(len(notified), ft._MAX_NOTIFY_PER_RUN)
+        self.assertEqual([t['slug'] for t in notified],
+                         [f's{i}' for i in range(ft._MAX_NOTIFY_PER_RUN)])
+        # X post is capped identically.
+        self.assertEqual(len(x.call_args[0][0]), ft._MAX_NOTIFY_PER_RUN)
+
+    def test_under_cap_notifies_all(self):
+        templates = self._templates(3)
+        _, notify, _, _ = self._run(templates, {'existing'})
+        notify.assert_called_once()
+        self.assertEqual(len(notify.call_args[0][0]), 3)
+
+    def test_backlog_summary_reports_backfill(self):
+        templates = self._templates(25)
+        _, _, _, summary = self._run(templates, {'existing'})
+        summary.assert_called_once()
+        text = summary.call_args[0][0]
+        self.assertIn('backfilled', text.lower())
+
+    def test_first_run_with_backlog_still_seeds_silently(self):
+        # First run (empty DB) seeds everything without notifying, regardless of cap.
+        templates = self._templates(25)
+        save, notify, x, _ = self._run(templates, set())
+        self.assertEqual(save.call_count, 25)
+        notify.assert_not_called()
+        x.assert_not_called()
 
 
 if __name__ == '__main__':
