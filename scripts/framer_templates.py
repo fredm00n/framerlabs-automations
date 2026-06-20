@@ -283,7 +283,15 @@ def fetch_from_rsc() -> list[dict]:
         bodies.append(body)
 
         count_before = len(templates)
-        total_parse_errors += _parse_rsc_body(body, seen, templates, _RSC_PRIMARY_KEY)
+        # Primary: the embedded "data":[...] array carries the real newest-templates
+        # grid (~120 items, newest-first) — the list a visitor sees under "Newest".
+        # Then also scan the 12 curated "resource":{...} featured blocks; these are
+        # deduplicated by slug, so this only adds any featured template not already
+        # in the newest grid.  Both run every page so the legacy fallback machinery
+        # below still recovers templates if Framer changes the data-array encoding.
+        page_errors = _parse_rsc_data_array(body, seen, templates)
+        page_errors += _parse_rsc_body(body, seen, templates, _RSC_PRIMARY_KEY)
+        total_parse_errors += page_errors
         new_this_page = len(templates) - count_before
 
         if new_this_page < 12:
@@ -363,6 +371,98 @@ def fetch_from_rsc() -> list[dict]:
     return templates
 
 
+def _new_format_template(item: dict) -> dict:
+    """Map a June-2026+ RSC template object to our internal template dict.
+
+    Shared by both the embedded ``"data":[...]`` newest-feed parser
+    (``_parse_rsc_data_array``) and the ``"resource":{...}`` featured-block parser
+    (``_parse_rsc_body``), since both encode each template with the same field
+    layout: ``introduction`` (meta title), ``author`` object, ``media[0].url``
+    (thumbnail), plain-ISO ``publishedAt`` (no ``$D`` prefix), and an
+    ``attributes`` sub-object carrying ``price`` and ``previewUrl``.
+
+    ``attributes.price`` may be a number (e.g. ``39``), ``null`` (free template),
+    or a string.  Numbers are stringified; ``null`` becomes ``''``; a string with
+    the RSC ``$$`` literal-dollar prefix has one ``$`` stripped.
+    """
+    attrs = item.get('attributes') or {}
+    price_raw = attrs.get('price')
+    if price_raw is None:
+        price = ''
+    elif isinstance(price_raw, (int, float)):
+        price = str(price_raw)
+    elif isinstance(price_raw, str) and price_raw.startswith('$$'):
+        # RSC encodes a literal "$" as "$$" — strip one
+        price = price_raw[1:]
+    else:
+        price = price_raw
+    author_obj = item.get('author') or {}
+    media = item.get('media') or []
+    thumbnail = media[0].get('url', '') if media and isinstance(media[0], dict) else ''
+    slug = item.get('slug', '') or ''
+    return {
+        'slug': slug,
+        'title': item.get('title', '') or '',
+        'meta_title': item.get('introduction', '') or '',
+        'author': author_obj.get('name', '') or '',
+        'author_slug': author_obj.get('slug', '') or '',
+        'price': price,
+        'url': f'{_MARKETPLACE_TEMPLATES_URL}{slug}/',
+        'demo_url': attrs.get('previewUrl', '') or '',
+        'thumbnail': thumbnail,
+        'published_at': item.get('publishedAt', '') or '',
+        'remixes': item.get('remixes') or 0,
+    }
+
+
+def _parse_rsc_data_array(body: str, seen: set, templates: list) -> int:
+    """Parse template objects from embedded ``"data":[...]`` arrays in the RSC body.
+
+    Since the June 2026 marketplace redesign, the newest-templates grid is embedded
+    in the RSC stream as a client-query (SWR-style) cache: a JSON array under a
+    ``"data"`` key whose elements are full template objects
+    (``{"type":"template","slug":...,"author":{...},"attributes":{...},
+    "publishedAt":...}``).  This array holds the *actual* newest listing
+    (~120 items, newest-first) — distinct from the 12 curated ``"resource":{...}``
+    featured blocks that ``_parse_rsc_body`` reads.  The pre-redesign parser keyed
+    only on ``"resource":{`` and so silently missed every newly published template.
+
+    New (deduplicated) templates are appended to ``templates`` in newest-first
+    order.  Returns the number of ``"data"`` arrays that failed to parse as JSON
+    (diagnostic only — a non-zero value hints at a format change).
+    """
+    parse_errors = 0
+    pos = 0
+    key = '"data":'
+    while True:
+        idx = body.find(key, pos)
+        if idx == -1:
+            break
+        pos = idx + 1
+        # Only consider a "data" value that is an array — skip object/scalar values.
+        j = idx + len(key)
+        while j < len(body) and body[j] in ' \t\r\n':
+            j += 1
+        if j >= len(body) or body[j] != '[':
+            continue
+        try:
+            data = _extract_json_array(body, j)
+        except ValueError:
+            parse_errors += 1
+            continue
+        if not isinstance(data, list):
+            continue
+        for item in data:
+            if not isinstance(item, dict) or item.get('type') != 'template':
+                continue
+            slug = item.get('slug')
+            if not slug or slug in seen:
+                continue
+            seen.add(slug)
+            templates.append(_new_format_template(item))
+    return parse_errors
+
+
 def _parse_rsc_body(body: str, seen: set, templates: list,
                     search_key: str = '"resource":{') -> int:
     """Parse template items from an RSC body, appending new ones to templates in-place.
@@ -417,18 +517,10 @@ def _parse_rsc_body(body: str, seen: set, templates: list,
             if slug and slug not in seen:
                 seen.add(slug)
                 if new_format:
-                    # New RSC format (June 2026+): fields moved into sub-objects
-                    attrs = item.get('attributes') or {}
-                    price_raw = attrs.get('price') or ''
-                    author_obj = item.get('author') or {}
-                    author = author_obj.get('name', '')
-                    author_slug = author_obj.get('slug', '')
-                    # publishedAt is now plain ISO 8601 — no "$D" prefix to strip
-                    published_at = item.get('publishedAt', '')
-                    media = item.get('media') or []
-                    thumbnail = media[0].get('url', '') if media else ''
-                    demo_url = attrs.get('previewUrl', '')
-                    meta_title = item.get('introduction', '')
+                    # New RSC format (June 2026+): fields moved into sub-objects.
+                    # Shared with the embedded data-array parser so both paths map
+                    # identical template objects the same way.
+                    templates.append(_new_format_template(item))
                 else:
                     # Old RSC format (pre-June 2026)
                     price_raw = item.get('price', '')
@@ -444,21 +536,21 @@ def _parse_rsc_body(body: str, seen: set, templates: list,
                     thumbnail = item.get('thumbnail', '')
                     demo_url = item.get('publishedUrl', '')
                     meta_title = item.get('metaTitle', '')
-                # RSC encodes literal "$" as "$$" in string values — strip it
-                price = price_raw[1:] if isinstance(price_raw, str) and price_raw.startswith('$$') else (price_raw or '')
-                templates.append({
-                    'slug': slug,
-                    'title': item.get('title', ''),
-                    'meta_title': meta_title,
-                    'author': author,
-                    'author_slug': author_slug,
-                    'price': price,
-                    'url': f'{_MARKETPLACE_TEMPLATES_URL}{slug}/',
-                    'demo_url': demo_url,
-                    'thumbnail': thumbnail,
-                    'published_at': published_at,
-                    'remixes': item.get('remixes') or 0,
-                })
+                    # RSC encodes literal "$" as "$$" in string values — strip it
+                    price = price_raw[1:] if isinstance(price_raw, str) and price_raw.startswith('$$') else (price_raw or '')
+                    templates.append({
+                        'slug': slug,
+                        'title': item.get('title', ''),
+                        'meta_title': meta_title,
+                        'author': author,
+                        'author_slug': author_slug,
+                        'price': price,
+                        'url': f'{_MARKETPLACE_TEMPLATES_URL}{slug}/',
+                        'demo_url': demo_url,
+                        'thumbnail': thumbnail,
+                        'published_at': published_at,
+                        'remixes': item.get('remixes') or 0,
+                    })
         except ValueError:
             parse_errors += 1
         pos = idx + 1
@@ -488,6 +580,36 @@ def _extract_json_object(s: str, start: int) -> dict:
                     return json.loads(s[start:i + 1])
         i += 1
     raise ValueError('Unclosed JSON object')
+
+
+def _extract_json_array(s: str, start: int):
+    """Extract and parse a balanced JSON array from s starting at position start.
+
+    Mirrors ``_extract_json_object`` but for ``[...]`` literals.  Used to lift the
+    embedded ``"data":[...]`` newest-templates array out of the RSC stream.
+    Returns the parsed list, or ``None`` if the array is unterminated.
+    """
+    depth = 0
+    i = start
+    in_string = False
+    escape = False
+    while i < len(s):
+        c = s[i]
+        if escape:
+            escape = False
+        elif c == '\\' and in_string:
+            escape = True
+        elif c == '"':
+            in_string = not in_string
+        elif not in_string:
+            if c == '[':
+                depth += 1
+            elif c == ']':
+                depth -= 1
+                if depth == 0:
+                    return json.loads(s[start:i + 1])
+        i += 1
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1069,6 +1191,16 @@ def post_to_x(templates: list[dict]) -> None:
 _CONSECUTIVE_SAVE_FAILURE_SHORT_CIRCUIT = 3
 
 
+# Maximum number of templates to notify (Discord + X) in a single run.  All new
+# templates are still persisted to Notion, but only the newest this many are
+# announced — the older remainder is silently backfilled.  This protects the
+# channel from a notification burst when a backlog accumulates (e.g. after an
+# outage, or the first run after a parser fix that surfaces many previously
+# missed templates).  The feed is newest-first, so the newest are the ones
+# announced.
+_MAX_NOTIFY_PER_RUN = 10
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -1225,9 +1357,18 @@ def main() -> None:
             },
         )
 
+    # Cap notifications to the newest _MAX_NOTIFY_PER_RUN so a backlog cannot spam
+    # the channel.  saved_templates is newest-first, so the newest are announced and
+    # the older remainder is silently backfilled (already persisted to Notion above).
+    to_notify = saved_templates[:_MAX_NOTIFY_PER_RUN]
+    backfilled = len(saved_templates) - len(to_notify)
+
     if not is_first_run and saved_templates:
-        notify_discord_batch(saved_templates)
-        post_to_x(saved_templates)
+        notify_discord_batch(to_notify)
+        post_to_x(to_notify)
+        if backfilled:
+            print(f'Backfilled {backfilled} older template(s) to Notion without'
+                  f' notifying (cap {_MAX_NOTIFY_PER_RUN}/run).')
 
     if is_first_run:
         print(f'Done. Seeded {len(saved_templates)} template(s).')
@@ -1238,6 +1379,12 @@ def main() -> None:
         _write_summary(
             f'## Framer Monitor\n⚠️ {len(saved_templates)}/{len(new_templates)} new template(s) saved'
             f' ({failed} failed) · {len(seen_slugs)} already tracked'
+        )
+    elif backfilled:
+        print(f'Done. Notified {len(to_notify)} newest; backfilled {backfilled} silently.')
+        _write_summary(
+            f'## Framer Monitor\n✨ {len(saved_templates)} new template(s) found'
+            f' ({len(to_notify)} notified, {backfilled} backfilled) · {len(seen_slugs)} already tracked'
         )
     else:
         print(f'Done. Notified {len(saved_templates)} template(s).')
