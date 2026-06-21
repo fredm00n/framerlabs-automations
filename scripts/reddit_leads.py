@@ -214,18 +214,46 @@ _SSL_CTX.verify_mode = ssl.CERT_NONE
 from shared import http_get as _shared_http_get, http_patch as _shared_http_patch
 
 
+def _is_reddit_host(url: str) -> bool:
+    """True if *url* points at reddit.com (or a subdomain)."""
+    host = urllib.parse.urlsplit(url).hostname or ''
+    return host == 'reddit.com' or host.endswith('.reddit.com')
+
+
 def _ssl_context_for(url: str):
     """Return the cert-bypass context for Reddit URLs, else None (default verify)."""
-    host = urllib.parse.urlsplit(url).hostname or ''
-    if host == 'reddit.com' or host.endswith('.reddit.com'):
+    if _is_reddit_host(url):
         return _SSL_CTX
     return None
+
+
+def _reddit_cookie_header(url: str) -> dict:
+    """Return a ``{'Cookie': ...}`` header for Reddit URLs when REDDIT_COOKIE is set.
+
+    Reddit throttles cookieless/anonymous RSS to ~1 request/60s per IP (its
+    anti-scraper bucket) — fetching 43 feeds in a burst from a GitHub Actions
+    datacenter IP otherwise produces a wall of HTTP 429s.  A logged-out browser
+    ``loid``/``edgebucket`` cookie moves requests into the normal visitor bucket
+    (~100 requests/10 min); it keys on the loid, not the IP, so it works from
+    any runner.  The cookie is read from the ``REDDIT_COOKIE`` env var (a GitHub
+    Actions secret — never committed, as this repo is public) and is only ever
+    sent to reddit.com, never to the Notion API which shares this wrapper.  If
+    the var is unset the script behaves exactly as before.
+    """
+    if not _is_reddit_host(url):
+        return {}
+    cookie = os.environ.get('REDDIT_COOKIE')
+    return {'Cookie': cookie} if cookie else {}
 
 
 def http_get(url: str, headers: dict | None = None) -> str:
     return _shared_http_get(
         url,
-        headers={'User-Agent': _REDDIT_USER_AGENT, **(headers or {})},
+        headers={
+            'User-Agent': _REDDIT_USER_AGENT,
+            **_reddit_cookie_header(url),
+            **(headers or {}),
+        },
         ssl_context=_ssl_context_for(url),
     )
 

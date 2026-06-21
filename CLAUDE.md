@@ -178,6 +178,8 @@ Post Date, Discovered, Review Notes, Notified (checkbox)
 - `python3 scripts/reddit_leads.py --update-status PAGE_ID STATUS NOTES` — approve/reject
 - `python3 scripts/reddit_leads.py --notify PAGE_ID` — send Discord embed + mark notified
 
+**Reddit cookie auth (avoids HTTP 429):** Reddit serves anonymous/cookieless RSS from a brutal anti-scraper bucket (~1 request/60s per IP), so fetching 43 feeds in a burst from a GitHub Actions datacenter IP produces a wall of HTTP 429s. Setting the `REDDIT_COOKIE` env var (a logged-out browser `edgebucket`+`loid` cookie) moves requests into the normal visitor bucket (~100 requests/10 min); it keys on the `loid`, not the IP, so it works from any runner — no proxy, VPS, or OAuth needed. The cookie is injected as a `Cookie` header by `http_get` **only for `reddit.com` hosts** (`_reddit_cookie_header` / `_is_reddit_host`), never on the Notion API calls that share the same wrapper. The variable is optional — unset, the script runs exactly as before (and will 429 under load). It is stored as a GitHub Actions secret and **never committed** (this repo is public). `loid` is multi-year; if 429s return, re-harvest from a logged-out browser (DevTools → Network → any reddit.com request → Request Headers → Cookie) and update the secret.
+
 **Partial failure alerting:** If >50% of subreddit feeds fail to fetch (e.g. Reddit rate-limiting or a partial network issue), a warning is sent to `DISCORD_ALERTS_WEBHOOK_URL`. If all feeds fail, an error-level alert is sent instead.
 
 **Deferred improvements** (still open):
@@ -200,6 +202,7 @@ See [deferred_improvements.md](./deferred_improvements.md) for full historical c
 | `DISCORD_WEBHOOK_URL_TEMPLATES` | Discord webhook for new template notifications |
 | `DISCORD_WEBHOOK_URL_LEADS` | Discord webhook for approved Framer leads (separate channel) |
 | `DISCORD_ALERTS_WEBHOOK_URL` | Discord webhook for system-level errors and warnings (separate channel) |
+| `REDDIT_COOKIE` | Logged-out Reddit cookie (`edgebucket` + `loid`) injected on `reddit_leads.py` RSS fetches to avoid HTTP 429 throttling (optional — script still runs if unset). See the reddit_leads.py section. |
 | `TWITTER_API_KEY` | Twitter/X API consumer key (optional — X posting skipped if not set) |
 | `TWITTER_API_SECRET` | Twitter/X API consumer secret |
 | `TWITTER_ACCESS_TOKEN` | Twitter/X user access token |
