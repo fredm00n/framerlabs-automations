@@ -371,6 +371,35 @@ def fetch_from_rsc() -> list[dict]:
     return templates
 
 
+def _format_price(raw) -> str:
+    """Normalise a raw RSC price into a display string with a currency symbol.
+
+    The newest-feed data array encodes price as a number (e.g. ``79``) or ``null``
+    for a free template; the featured ``"resource"`` blocks use a string (a bare
+    ``"99"``, an RSC ``"$$99"`` literal-dollar form, or ``""``).  Normalise all of
+    these to ``"$<n>"`` for paid templates and ``"Free"`` for free ones, so Discord,
+    X, and Notion show a price with a ``$`` instead of a bare number — and ``"Free"``
+    instead of a blank (the bug visible in the grouped Discord summary).
+    """
+    if raw is None or isinstance(raw, bool):
+        return 'Free'
+    if isinstance(raw, (int, float)):
+        n = int(raw) if float(raw).is_integer() else raw
+        return f'${n}' if n else 'Free'
+    s = str(raw).strip()
+    if not s:
+        return 'Free'
+    if s.startswith('$$'):
+        # RSC encodes a literal "$" as "$$" — strip one
+        s = s[1:]
+    if s.startswith('$'):
+        return s
+    # Plain numeric string like "99" → "$99" (or "Free" when zero)
+    if s.replace('.', '', 1).isdigit():
+        return f'${s}' if float(s) != 0 else 'Free'
+    return s
+
+
 def _new_format_template(item: dict) -> dict:
     """Map a June-2026+ RSC template object to our internal template dict.
 
@@ -382,20 +411,12 @@ def _new_format_template(item: dict) -> dict:
     ``attributes`` sub-object carrying ``price`` and ``previewUrl``.
 
     ``attributes.price`` may be a number (e.g. ``39``), ``null`` (free template),
-    or a string.  Numbers are stringified; ``null`` becomes ``''``; a string with
-    the RSC ``$$`` literal-dollar prefix has one ``$`` stripped.
+    or a string.  ``_format_price`` normalises all of these to a display string
+    (``"$39"`` for paid, ``"Free"`` for free) so notifications show a currency
+    symbol instead of a bare number, and a "Free" label instead of a blank.
     """
     attrs = item.get('attributes') or {}
-    price_raw = attrs.get('price')
-    if price_raw is None:
-        price = ''
-    elif isinstance(price_raw, (int, float)):
-        price = str(price_raw)
-    elif isinstance(price_raw, str) and price_raw.startswith('$$'):
-        # RSC encodes a literal "$" as "$$" — strip one
-        price = price_raw[1:]
-    else:
-        price = price_raw
+    price = _format_price(attrs.get('price'))
     author_obj = item.get('author') or {}
     media = item.get('media') or []
     thumbnail = media[0].get('url', '') if media and isinstance(media[0], dict) else ''
@@ -536,8 +557,7 @@ def _parse_rsc_body(body: str, seen: set, templates: list,
                     thumbnail = item.get('thumbnail', '')
                     demo_url = item.get('publishedUrl', '')
                     meta_title = item.get('metaTitle', '')
-                    # RSC encodes literal "$" as "$$" in string values — strip it
-                    price = price_raw[1:] if isinstance(price_raw, str) and price_raw.startswith('$$') else (price_raw or '')
+                    price = _format_price(price_raw)
                     templates.append({
                         'slug': slug,
                         'title': item.get('title', ''),

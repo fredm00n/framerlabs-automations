@@ -1228,6 +1228,20 @@ class TestBuildSummaryEmbed(unittest.TestCase):
                     f'Orphaned category header before truncation line: {prev!r}',
                 )
 
+    def test_summary_renders_free_and_dollar_prices(self):
+        # Regression for the grouped Discord summary: free templates must show
+        # "Free" (not a blank after "--") and paid templates must show a "$".
+        paid = _template(title='Keven', slug='keven', author='Yunus', price='$79')
+        free = _template(title='Cameroll', slug='cameroll', author='Asril', price='Free')
+        desc = ft._build_summary_embed([paid, free])['description']
+        self.assertIn('by Yunus -- $79', desc)
+        self.assertIn('by Asril -- Free', desc)
+        # No template line should end with a dangling "-- " (blank price).
+        for line in desc.splitlines():
+            if line.startswith('- '):
+                self.assertFalse(line.rstrip().endswith('--'),
+                                 f'Line has a blank price: {line!r}')
+
     def test_escapes_bracket_in_title_to_preserve_markdown_link(self):
         # A title containing ``]`` would otherwise terminate the Discord
         # markdown link early — the renderer would treat ``Pro`` as a link to
@@ -1994,19 +2008,55 @@ class TestExtractJsonArray(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# _format_price
+# ---------------------------------------------------------------------------
+
+class TestFormatPrice(unittest.TestCase):
+
+    def test_numeric_price_gets_dollar(self):
+        self.assertEqual(ft._format_price(79), '$79')
+        self.assertEqual(ft._format_price(49), '$49')
+
+    def test_float_whole_number_renders_without_decimal(self):
+        self.assertEqual(ft._format_price(79.0), '$79')
+
+    def test_none_is_free(self):
+        self.assertEqual(ft._format_price(None), 'Free')
+
+    def test_zero_is_free(self):
+        self.assertEqual(ft._format_price(0), 'Free')
+
+    def test_empty_string_is_free(self):
+        self.assertEqual(ft._format_price(''), 'Free')
+
+    def test_plain_numeric_string_gets_dollar(self):
+        # The featured "resource" blocks encode paid price as a bare "99".
+        self.assertEqual(ft._format_price('99'), '$99')
+
+    def test_double_dollar_rsc_encoding_stripped(self):
+        self.assertEqual(ft._format_price('$$29'), '$29')
+
+    def test_already_dollar_prefixed_unchanged(self):
+        self.assertEqual(ft._format_price('$129'), '$129')
+
+    def test_free_label_unchanged(self):
+        self.assertEqual(ft._format_price('Free'), 'Free')
+
+
+# ---------------------------------------------------------------------------
 # _new_format_template
 # ---------------------------------------------------------------------------
 
 class TestNewFormatTemplate(unittest.TestCase):
 
-    def test_numeric_price_stringified(self):
-        # data-array prices are numbers (e.g. 39) — must be coerced to a string.
+    def test_numeric_price_gets_dollar_prefix(self):
+        # data-array prices are bare numbers (e.g. 39) — must render as "$39".
         t = ft._new_format_template(_data_array_item('s', price=39))
-        self.assertEqual(t['price'], '39')
+        self.assertEqual(t['price'], '$39')
 
-    def test_null_price_becomes_empty_string(self):
+    def test_null_price_becomes_free(self):
         t = ft._new_format_template(_data_array_item('s', price=None))
-        self.assertEqual(t['price'], '')
+        self.assertEqual(t['price'], 'Free')
 
     def test_double_dollar_string_price_stripped(self):
         # The featured "resource":{...} path encodes a literal "$" as "$$".
@@ -2034,7 +2084,7 @@ class TestNewFormatTemplate(unittest.TestCase):
 
     def test_missing_attributes_and_media_are_safe(self):
         t = ft._new_format_template({'slug': 's', 'title': 'T'})
-        self.assertEqual(t['price'], '')
+        self.assertEqual(t['price'], 'Free')
         self.assertEqual(t['demo_url'], '')
         self.assertEqual(t['thumbnail'], '')
         self.assertEqual(t['author'], '')
@@ -2085,8 +2135,8 @@ class TestParseRscDataArray(unittest.TestCase):
         ])
         _, templates, _ = self._parse(body)
         prices = {t['slug']: t['price'] for t in templates}
-        self.assertEqual(prices['paid'], '39')
-        self.assertEqual(prices['free'], '')
+        self.assertEqual(prices['paid'], '$39')
+        self.assertEqual(prices['free'], 'Free')
 
 
 # ---------------------------------------------------------------------------
