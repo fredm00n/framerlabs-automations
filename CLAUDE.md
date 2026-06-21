@@ -26,7 +26,7 @@ There are three types of sessions:
 - **Tier 2b — Claude Code VM — leads reviewer** (hourly, Haiku): Reviews pending Reddit leads with reasoning, approves or rejects each one, and notifies Discord for approved leads. Defined in `REDDIT_LEADS_REVIEWER.md`.
 
 ### Runtime
-Scripts are written in **Python 3** (stdlib only, no pip dependencies).
+Scripts are written in **Python 3.10+** (stdlib only, no pip dependencies). They use PEP 604 `X | None` annotations that are evaluated at runtime (there is no `from __future__ import annotations`), so Python 3.9 fails at import — run tests/scripts with 3.10 or newer locally. CI uses the latest 3.x.
 Shared utilities (HTTP retry, Notion helpers, alert suppression, dotenv) live in `scripts/shared.py` — both scripts import from it.
 Node.js is available but has no DNS access in the scheduler VM — do not use it for network calls.
 
@@ -169,14 +169,18 @@ Monitors Reddit RSS feeds across 43 subreddits for potential Framer freelance le
 - *Marketing/industry subreddits*: pass if website + hiring signal
 - **Always exclude**: tutorials, feedback requests, complaints, framer pricing questions, job seekers
 
-**Fields tracked:** Name, URL, Subreddit (select), Content, Status (select: pending/approved/rejected),
-Post Date, Discovered, Review Notes, Notified (checkbox)
+**Fields tracked:** Name, URL, Subreddit (select), Content, Status (select: pending/approved/rejected/failed),
+Post Date, Discovered, Review Notes, Notified (checkbox). The `failed` status is a save-failed sentinel
+(`save_failed_sentinel_to_notion`): when a post repeatedly 400s on save, a minimal page is written so future
+dedup checks skip it instead of retrying the same bad payload every run.
 
 **CLI interface** (used by reviewer session):
 - `python3 scripts/reddit_leads.py --list-pending` — prints JSON of pending leads
 - `python3 scripts/reddit_leads.py --list-unnotified-approved` — prints JSON of leads that were approved in a previous session but whose Discord notification failed (Status=approved + Notified=False); used to retry `--notify` so they are not silently lost
 - `python3 scripts/reddit_leads.py --update-status PAGE_ID STATUS NOTES` — approve/reject
 - `python3 scripts/reddit_leads.py --notify PAGE_ID` — send Discord embed + mark notified
+
+**Reddit cookie auth (avoids HTTP 429):** Reddit serves anonymous/cookieless RSS from a brutal anti-scraper bucket (~1 request/60s per IP), so fetching 43 feeds in a burst from a GitHub Actions datacenter IP produces a wall of HTTP 429s. Setting the `REDDIT_COOKIE` env var (a logged-out browser `edgebucket`+`loid` cookie) moves requests into the normal visitor bucket (~100 requests/10 min); it keys on the `loid`, not the IP, so it works from any runner — no proxy, VPS, or OAuth needed. As a secondary defense the script also paces requests `_INTER_FEED_DELAY` (1.5s) apart and sends a browser `User-Agent` (`_REDDIT_USER_AGENT`; Reddit 403s without one). The cookie is injected as a `Cookie` header by `http_get` **only for `reddit.com` hosts** (`_reddit_cookie_header` / `_is_reddit_host`), never on the Notion API calls that share the same wrapper. The variable is optional — unset, the script runs exactly as before (and will 429 under load). It is stored as a GitHub Actions secret and **never committed** (this repo is public). `loid` is multi-year; if 429s return, re-harvest from a logged-out browser (DevTools → Network → any reddit.com request → Request Headers → Cookie) and update the secret.
 
 **Partial failure alerting:** If >50% of subreddit feeds fail to fetch (e.g. Reddit rate-limiting or a partial network issue), a warning is sent to `DISCORD_ALERTS_WEBHOOK_URL`. If all feeds fail, an error-level alert is sent instead.
 
@@ -200,6 +204,7 @@ See [deferred_improvements.md](./deferred_improvements.md) for full historical c
 | `DISCORD_WEBHOOK_URL_TEMPLATES` | Discord webhook for new template notifications |
 | `DISCORD_WEBHOOK_URL_LEADS` | Discord webhook for approved Framer leads (separate channel) |
 | `DISCORD_ALERTS_WEBHOOK_URL` | Discord webhook for system-level errors and warnings (separate channel) |
+| `REDDIT_COOKIE` | Logged-out Reddit cookie (`edgebucket` + `loid`) injected on `reddit_leads.py` RSS fetches to avoid HTTP 429 throttling (optional — script still runs if unset). See the reddit_leads.py section. |
 | `TWITTER_API_KEY` | Twitter/X API consumer key (optional — X posting skipped if not set) |
 | `TWITTER_API_SECRET` | Twitter/X API consumer secret |
 | `TWITTER_ACCESS_TOKEN` | Twitter/X user access token |

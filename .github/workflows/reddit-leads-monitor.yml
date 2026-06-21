@@ -21,6 +21,7 @@ jobs:
           NOTION_REDDIT_LEADS_DB_ID: ${{ secrets.NOTION_REDDIT_LEADS_DB_ID }}
           DISCORD_WEBHOOK_URL_LEADS: ${{ secrets.DISCORD_WEBHOOK_URL_LEADS }}
           DISCORD_ALERTS_WEBHOOK_URL: ${{ secrets.DISCORD_ALERTS_WEBHOOK_URL }}
+          REDDIT_COOKIE: ${{ secrets.REDDIT_COOKIE }}
         run: python3 scripts/reddit_leads.py
       - name: Commit error log
         if: always()

@@ -23,7 +23,9 @@ from scripts.reddit_leads import (
     _VALID_STATUSES,
     _clean_html,
     _has_word_start_phrase,
+    _is_reddit_host,
     _is_valid_iso8601_date,
+    _reddit_cookie_header,
     _ssl_context_for,
     cli,
     fetch_reddit_posts,
@@ -400,6 +402,71 @@ class TestSSLContextSelection(unittest.TestCase):
         mock_shared_patch.return_value = {}
         http_patch('https://api.notion.com/v1/pages/abc', {'properties': {}})
         self.assertIsNone(mock_shared_patch.call_args.kwargs['ssl_context'])
+
+
+# ---------------------------------------------------------------------------
+# TestRedditCookie — the REDDIT_COOKIE auth header that lifts RSS fetches out of
+# Reddit's ~1/60s-per-IP anti-scraper bucket.  The cookie must reach reddit.com
+# and ONLY reddit.com — leaking the loid onto the Notion API calls that share
+# the http_get wrapper would send an unrelated credential to a third party.
+# ---------------------------------------------------------------------------
+
+class TestRedditCookie(unittest.TestCase):
+
+    def test_is_reddit_host_matches_reddit_and_subdomains(self):
+        self.assertTrue(_is_reddit_host('https://www.reddit.com/r/forhire/.rss'))
+        self.assertTrue(_is_reddit_host('https://reddit.com/r/framer/.rss'))
+        self.assertTrue(_is_reddit_host('https://oauth.reddit.com/x'))
+
+    def test_is_reddit_host_rejects_notion_and_lookalikes(self):
+        self.assertFalse(_is_reddit_host('https://api.notion.com/v1/pages/abc'))
+        # "notreddit.com" ends in the string "reddit.com" but not at a dot
+        # boundary — must not be treated as Reddit.
+        self.assertFalse(_is_reddit_host('https://notreddit.com/r/forhire/.rss'))
+
+    @patch.dict(os.environ, {'REDDIT_COOKIE': 'edgebucket=abc; loid=xyz'}, clear=False)
+    def test_cookie_header_present_for_reddit_when_env_set(self):
+        self.assertEqual(
+            _reddit_cookie_header('https://www.reddit.com/r/forhire/.rss'),
+            {'Cookie': 'edgebucket=abc; loid=xyz'},
+        )
+
+    @patch.dict(os.environ, {'REDDIT_COOKIE': 'edgebucket=abc; loid=xyz'}, clear=False)
+    def test_cookie_header_never_sent_to_notion(self):
+        # Even with the cookie configured, a non-Reddit host gets no Cookie header.
+        self.assertEqual(
+            _reddit_cookie_header('https://api.notion.com/v1/pages/abc'), {}
+        )
+
+    def test_cookie_header_absent_when_env_unset(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                _reddit_cookie_header('https://www.reddit.com/r/forhire/.rss'), {}
+            )
+
+    @patch('scripts.reddit_leads._shared_http_get')
+    @patch.dict(os.environ, {'REDDIT_COOKIE': 'edgebucket=abc; loid=xyz'}, clear=False)
+    def test_http_get_sends_cookie_and_user_agent_to_reddit(self, mock_shared_get):
+        mock_shared_get.return_value = '<feed/>'
+        http_get('https://www.reddit.com/r/forhire/.rss')
+        sent = mock_shared_get.call_args.kwargs['headers']
+        self.assertEqual(sent['Cookie'], 'edgebucket=abc; loid=xyz')
+        # The browser User-Agent must still be present (Reddit 403s without one).
+        self.assertEqual(sent['User-Agent'], rl._REDDIT_USER_AGENT)
+
+    @patch('scripts.reddit_leads._shared_http_get')
+    @patch.dict(os.environ, {'REDDIT_COOKIE': 'edgebucket=abc; loid=xyz'}, clear=False)
+    def test_http_get_omits_cookie_for_notion(self, mock_shared_get):
+        mock_shared_get.return_value = '{}'
+        http_get('https://api.notion.com/v1/pages/abc')
+        self.assertNotIn('Cookie', mock_shared_get.call_args.kwargs['headers'])
+
+    @patch('scripts.reddit_leads._shared_http_get')
+    def test_http_get_no_cookie_when_env_unset(self, mock_shared_get):
+        mock_shared_get.return_value = '<feed/>'
+        with patch.dict(os.environ, {}, clear=True):
+            http_get('https://www.reddit.com/r/forhire/.rss')
+        self.assertNotIn('Cookie', mock_shared_get.call_args.kwargs['headers'])
 
 
 # ---------------------------------------------------------------------------
