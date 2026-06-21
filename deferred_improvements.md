@@ -45,6 +45,8 @@
 
 ### Implemented (context for future reference)
 
+- Reddit cookie auth (`REDDIT_COOKIE` env var) — a logged-out browser `edgebucket`+`loid` cookie is injected as a `Cookie` header on reddit.com RSS fetches (`_reddit_cookie_header` / `_is_reddit_host`), moving requests out of Reddit's ~1/60s-per-IP anonymous bucket into the ~100/10min logged-out visitor bucket. The `loid` keys on the cookie, not the IP, so it fixes the recurring HTTP 429 fetch failures from GitHub Actions' datacenter IP — no proxy, VPS, or OAuth needed. Host-gated so the cookie never reaches the Notion API that shares the `http_get` wrapper; optional (script runs unchanged if unset); stored as a GH Actions secret (repo is public — never committed). `loid` is multi-year; re-harvest from a logged-out browser if 429s return.
+- Inter-feed pacing — `_INTER_FEED_DELAY` (1.5s) sleep between subreddit fetches, plus a browser `_REDDIT_USER_AGENT` (Reddit 403s the default UA). Secondary 429 defense alongside the cookie above; previously listed as the deferred "Rate limiting" item.
 - Persistent 400 tracking via `save_failed_sentinel_to_notion`
 - Dedup-check error isolation (separate try/except from save)
 - `post_date` in reviewer output
