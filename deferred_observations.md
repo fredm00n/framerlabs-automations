@@ -40,3 +40,12 @@ and be implemented.
   broken parser, no recurring data-losing failure, and no substantive
   filter/subreddit/category improvement evidenced this session. No change
   warranted.
+
+- **2026-06-27** — Self-improvement review: the committed `logs/errors.jsonl`
+  has 2,331 entries older than 7 days (eligible for trimming) and 618 entries
+  within the 7-day window, all from June 20–21. All 618 are HTTP 429 fetch
+  failures from `reddit_leads.py` — these are pre-fix entries, logged before
+  the REDDIT_COOKIE auth fix merged on June 22 (PR #115). Since June 22, zero
+  new errors have been committed, confirming the cookie fix is working. No open
+  PRs. Both parsers syntax-check OK and the full test suite passes (417 tests).
+  Log trimming deferred (no real change to bundle it with). No change warranted.
