@@ -50,7 +50,7 @@ def load_dotenv() -> None:
 
 def _should_retry(exc: Exception) -> bool:
     if isinstance(exc, urllib.error.HTTPError):
-        return exc.code in (429, 500, 502, 503, 504)
+        return exc.code in (429, 500, 502, 503, 504, 529)
     if isinstance(exc, urllib.error.URLError):
         return True
     if isinstance(exc, TimeoutError):
