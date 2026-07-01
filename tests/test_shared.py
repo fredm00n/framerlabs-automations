@@ -83,7 +83,7 @@ class TestShouldRetry(unittest.TestCase):
         self.assertTrue(shared._should_retry(exc))
 
     def test_retries_on_5xx(self):
-        for code in (500, 502, 503, 504):
+        for code in (500, 502, 503, 504, 529):
             with self.subTest(code=code):
                 exc = urllib.error.HTTPError(None, code, 'err', {}, None)
                 self.assertTrue(shared._should_retry(exc))
