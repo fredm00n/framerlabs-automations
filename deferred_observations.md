@@ -40,3 +40,12 @@ and be implemented.
   broken parser, no recurring data-losing failure, and no substantive
   filter/subreddit/category improvement evidenced this session. No change
   warranted.
+
+- **2026-07-07** — All 16 errors in the 7-day window are HTTP 529
+  (`service_overload`) from a single Notion outage on 2026-06-30 (11:48–18:10
+  UTC). The outage caused 4 missed lead saves in `reddit_leads.py` (sentinel
+  writes also failed, so the same r/nocode post was retried at 13:31 and failed
+  again) and 5 missed template saves + short-circuit in `framer_templates.py`.
+  PR #116 (merged 2026-07-01) added 529 to the shared `_should_retry` handler
+  before this session ran; no recurrence since. No current failures, no parser
+  breakage, no new capability improvement evidenced. No change warranted.
