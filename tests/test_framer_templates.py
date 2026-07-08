@@ -173,6 +173,19 @@ def _rsc_data_array_body(items):
     return '5:["$","div",null,{"data":' + json.dumps(items) + '}]'
 
 
+def _rsc_items_array_body(items, section='freshFinds'):
+    """Wrap template dicts in a July-2026 sectioned RSC fragment: ``...,"items":[...],...``.
+
+    The July 2026 Framer RSC format replaced the single ``"data":[]`` array with
+    named section objects (``freshFinds``, ``trending``, ``free``, etc.), each
+    carrying its templates in an ``"items":[]`` array.
+    """
+    return (
+        '5:["$","$1","' + section + '",'
+        '{"children":[["$","$L6e",null,{"items":' + json.dumps(items) + '}]]}]'
+    )
+
+
 class TestFetchFromRsc(unittest.TestCase):
 
     def _fetch(self, body):
@@ -2138,6 +2151,56 @@ class TestParseRscDataArray(unittest.TestCase):
         self.assertEqual(prices['paid'], '$39')
         self.assertEqual(prices['free'], 'Free')
 
+    def test_items_key_parses_templates(self):
+        # July-2026 sectioned format: templates live under "items":[] inside a
+        # named section object.  The parser must find and extract them.
+        body = _rsc_items_array_body([
+            _data_array_item('fresh-a', id_='10', published='2026-07-01T10:00:00Z'),
+            _data_array_item('fresh-b', id_='11', published='2026-07-01T09:00:00Z'),
+        ])
+        _, templates, errs = self._parse(body)
+        self.assertEqual([t['slug'] for t in templates], ['fresh-a', 'fresh-b'])
+        self.assertEqual(errs, 0)
+
+    def test_items_key_ignores_non_template_elements(self):
+        # Elements without ``"type":"template"`` inside an "items" array must be
+        # skipped just as they are for "data" arrays.
+        items = [_data_array_item('real', id_='1'),
+                 {'type': 'category', 'slug': 'landing-pages', 'id': 'c2'}]
+        _, templates, _ = self._parse(_rsc_items_array_body(items))
+        self.assertEqual([t['slug'] for t in templates], ['real'])
+
+    def test_items_key_dedupes_against_seen(self):
+        # A slug already in ``seen`` (e.g. from the "data" path or a previous
+        # page) must not be added again when encountered in an "items" array.
+        body = _rsc_items_array_body([_data_array_item('dup2', id_='99')])
+        _, templates, _ = self._parse(body, seen={'dup2'})
+        self.assertEqual(len(templates), 0)
+
+    def test_items_key_followed_by_non_array_is_skipped(self):
+        # ``"items":{...}`` (an object, not an array) must be skipped silently.
+        body = '"items":{"slug":"x","type":"template"}'
+        _, templates, errs = self._parse(body)
+        self.assertEqual(len(templates), 0)
+        self.assertEqual(errs, 0)
+
+    def test_data_and_items_keys_both_parsed_and_deduped(self):
+        # When both "data":[] and "items":[] are present (e.g. during a format
+        # transition), templates are merged and a slug in both is counted only once.
+        shared = _data_array_item('shared', id_='1')
+        unique_data = _data_array_item('only-data', id_='2')
+        unique_items = _data_array_item('only-items', id_='3')
+        body = (_rsc_data_array_body([shared, unique_data])
+                + '\n'
+                + _rsc_items_array_body([shared, unique_items]))
+        _, templates, _ = self._parse(body)
+        slugs = [t['slug'] for t in templates]
+        self.assertIn('shared', slugs)
+        self.assertIn('only-data', slugs)
+        self.assertIn('only-items', slugs)
+        # ``shared`` must appear exactly once despite being in both arrays.
+        self.assertEqual(slugs.count('shared'), 1)
+
 
 # ---------------------------------------------------------------------------
 # fetch_from_rsc — embedded data array (the real newest-templates grid)
@@ -2190,6 +2253,59 @@ class TestFetchFromRscDataArray(unittest.TestCase):
             templates = ft.fetch_from_rsc()
         self.assertEqual([t['slug'] for t in templates[:6]],
                          ['n0', 'n1', 'n2', 'n3', 'n4', 'n5'])
+
+    def test_items_array_templates_are_captured(self):
+        # July-2026 format: templates live under ``"items":[]`` inside named
+        # section objects (freshFinds, trending, etc.).  fetch_from_rsc must
+        # find and return them just as it does for ``"data":[]`` templates.
+        items = [
+            _data_array_item(f'trend-{i}', id_=str(i),
+                             published=f'2026-07-01T{10 + i:02d}:00:00Z')
+            for i in range(5)
+        ]
+        body = _rsc_items_array_body(items, section='freshFinds')
+        with patch('framer_templates.http_get', return_value=body):
+            templates = ft.fetch_from_rsc()
+        slugs = {t['slug'] for t in templates}
+        for i in range(5):
+            self.assertIn(f'trend-{i}', slugs)
+
+    def test_items_array_and_resource_block_both_captured(self):
+        # Both the sectioned items arrays (July 2026) and the curated featured
+        # ``"resource":{...}`` blocks must be captured and merged in one call.
+        items_templates = [_data_array_item(f'new-{i}', id_=str(i)) for i in range(4)]
+        body = (_rsc_items_array_body(items_templates)
+                + '\n'
+                + _rsc_item('featured-y', id_='50'))
+        with patch('framer_templates.http_get', return_value=body):
+            templates = ft.fetch_from_rsc()
+        slugs = {t['slug'] for t in templates}
+        self.assertIn('featured-y', slugs)
+        self.assertIn('new-0', slugs)
+
+    def test_template_in_items_array_and_resource_block_not_duplicated(self):
+        # A template that appears in both an ``"items":[]`` section and a
+        # ``"resource":{...}`` featured block must be returned only once.
+        shared_item = _data_array_item('shared2', id_='7')
+        body = _rsc_items_array_body([shared_item]) + '\n' + _rsc_item('shared2', id_='7')
+        with patch('framer_templates.http_get', return_value=body):
+            templates = ft.fetch_from_rsc()
+        self.assertEqual(sum(1 for t in templates if t['slug'] == 'shared2'), 1)
+
+    def test_multiple_section_items_arrays_all_captured(self):
+        # The July-2026 format has several named sections (freshFinds, trending,
+        # free, rotatingCategory, rotatingFeature), each with its own "items":[].
+        # All must be discovered and merged by the same search loop.
+        sections = ['freshFinds', 'trending', 'free']
+        body = '\n'.join(
+            _rsc_items_array_body([_data_array_item(f'{sec}-t', id_=str(i))], section=sec)
+            for i, sec in enumerate(sections)
+        )
+        with patch('framer_templates.http_get', return_value=body):
+            templates = ft.fetch_from_rsc()
+        slugs = {t['slug'] for t in templates}
+        for sec in sections:
+            self.assertIn(f'{sec}-t', slugs)
 
 
 # ---------------------------------------------------------------------------

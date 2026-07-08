@@ -437,50 +437,60 @@ def _new_format_template(item: dict) -> dict:
 
 
 def _parse_rsc_data_array(body: str, seen: set, templates: list) -> int:
-    """Parse template objects from embedded ``"data":[...]`` arrays in the RSC body.
+    """Parse template objects from embedded arrays in the RSC body.
 
-    Since the June 2026 marketplace redesign, the newest-templates grid is embedded
-    in the RSC stream as a client-query (SWR-style) cache: a JSON array under a
-    ``"data"`` key whose elements are full template objects
-    (``{"type":"template","slug":...,"author":{...},"attributes":{...},
-    "publishedAt":...}``).  This array holds the *actual* newest listing
-    (~120 items, newest-first) — distinct from the 12 curated ``"resource":{...}``
-    featured blocks that ``_parse_rsc_body`` reads.  The pre-redesign parser keyed
-    only on ``"resource":{`` and so silently missed every newly published template.
+    Searches two key patterns to cover both the old and current RSC formats:
 
-    New (deduplicated) templates are appended to ``templates`` in newest-first
-    order.  Returns the number of ``"data"`` arrays that failed to parse as JSON
-    (diagnostic only — a non-zero value hints at a format change).
+    **Old format (``"data":``** — used between the June 2026 redesign and the
+    July 2026 sectioned-layout change): the newest-templates grid was embedded as a
+    client-query (SWR-style) cache under a ``"data"`` key.  Elements were full
+    template objects (``{"type":"template","slug":...}``), newest-first, ~120 items.
+
+    **Current format (``"items":``** — July 2026+): Framer replaced the single
+    ``"data":[]`` array with named section arrays: ``"freshFinds"`` (newest),
+    ``"trending"``, ``"free"``, ``"rotatingCategory"``, and ``"rotatingFeature"``.
+    Each section delivers its templates directly in an ``"items":[]`` array whose
+    elements are template objects with the same field layout as before
+    (``"type":"template"``, ``"slug"``, ``"author"``, ``"attributes"``,
+    ``"publishedAt"``, ``"media"``, ``"introduction"``).  These items are NOT
+    wrapped in a ``"resource":{}`` outer object, which is why
+    ``_parse_rsc_body(... '"resource":{'...)`` only finds the 12 curated featured
+    blocks and silently misses all newest/trending/free templates.
+
+    Both search keys share the same extraction loop and ``seen``-set dedup so
+    templates discovered via one path are not double-counted by the other.  A
+    non-zero return value indicates ``_extract_json_array`` parse failures
+    (diagnostic only — hints at another format change).
     """
     parse_errors = 0
-    pos = 0
-    key = '"data":'
-    while True:
-        idx = body.find(key, pos)
-        if idx == -1:
-            break
-        pos = idx + 1
-        # Only consider a "data" value that is an array — skip object/scalar values.
-        j = idx + len(key)
-        while j < len(body) and body[j] in ' \t\r\n':
-            j += 1
-        if j >= len(body) or body[j] != '[':
-            continue
-        try:
-            data = _extract_json_array(body, j)
-        except ValueError:
-            parse_errors += 1
-            continue
-        if not isinstance(data, list):
-            continue
-        for item in data:
-            if not isinstance(item, dict) or item.get('type') != 'template':
+    for key in ('"data":', '"items":'):
+        pos = 0
+        while True:
+            idx = body.find(key, pos)
+            if idx == -1:
+                break
+            pos = idx + 1
+            # Only consider a value that is an array — skip object/scalar values.
+            j = idx + len(key)
+            while j < len(body) and body[j] in ' \t\r\n':
+                j += 1
+            if j >= len(body) or body[j] != '[':
                 continue
-            slug = item.get('slug')
-            if not slug or slug in seen:
+            try:
+                data = _extract_json_array(body, j)
+            except ValueError:
+                parse_errors += 1
                 continue
-            seen.add(slug)
-            templates.append(_new_format_template(item))
+            if not isinstance(data, list):
+                continue
+            for item in data:
+                if not isinstance(item, dict) or item.get('type') != 'template':
+                    continue
+                slug = item.get('slug')
+                if not slug or slug in seen:
+                    continue
+                seen.add(slug)
+                templates.append(_new_format_template(item))
     return parse_errors
 
 
