@@ -49,3 +49,9 @@ and be implemented.
   PR #116 (merged 2026-07-01) added 529 to the shared `_should_retry` handler
   before this session ran; no recurrence since. No current failures, no parser
   breakage, no new capability improvement evidenced. No change warranted.
+
+- **2026-07-10** — Zero errors in the 7-day window (last log entry: 2026-06-30).
+  All 426 tests pass. No parser breakage, no recurring data-losing failure.
+  The July 2026 RSC sectioned format (`"items":` arrays) is covered by PR #117
+  (merged 2026-07-08); the 529 retry fix from PR #116 is holding. No open PRs.
+  No change warranted.
