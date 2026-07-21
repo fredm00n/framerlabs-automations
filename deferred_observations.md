@@ -65,3 +65,11 @@ and be implemented.
   pipeline runs without rate-limit errors since the REDDIT_COOKIE fix. Full test
   suite passes. No broken parser, no recurring data-losing failure, no
   substantive new capability evidenced. No change warranted.
+
+- **2026-07-21** — Zero errors in the last 7 days. All 2966 log entries are
+  pre-July-14 historical entries, all addressed by PRs #115–#117. Both parsers
+  syntax-check OK; framer_templates.py and reddit_leads.py look healthy. One
+  stale open PR (#118, "chore: scheduler observation log 2026-07-12") remains
+  unmerged but does not block anything. Full test suite passes (426 tests). No
+  broken parser, no recurring data-losing failure, no substantive new capability
+  evidenced. No change warranted.
