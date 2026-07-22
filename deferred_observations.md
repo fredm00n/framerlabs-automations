@@ -65,3 +65,9 @@ and be implemented.
   pipeline runs without rate-limit errors since the REDDIT_COOKIE fix. Full test
   suite passes. No broken parser, no recurring data-losing failure, no
   substantive new capability evidenced. No change warranted.
+
+- **2026-07-22** — Zero errors in the last 7 days. The error log's most recent
+  entries are still from the single Notion outage on 2026-06-30 (addressed by
+  PR #116). Both parsers look healthy; full test suite passes (426 tests). No
+  broken parser, no recurring data-losing failure, no substantive new capability
+  evidenced. No change warranted.
