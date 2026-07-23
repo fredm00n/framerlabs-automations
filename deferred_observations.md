@@ -65,3 +65,9 @@ and be implemented.
   pipeline runs without rate-limit errors since the REDDIT_COOKIE fix. Full test
   suite passes. No broken parser, no recurring data-losing failure, no
   substantive new capability evidenced. No change warranted.
+
+- **2026-07-23** — Zero errors in the last 7 days. Error log contains only
+  historical entries through 2026-06-30; all addressed by PRs #115–#117. PR #118
+  (observation log from 2026-07-12) still open and unmerged. Both parsers
+  healthy, full test suite passes (426 tests). No broken parser, no recurring
+  data-losing failure, no substantive new capability to add. No change warranted.
