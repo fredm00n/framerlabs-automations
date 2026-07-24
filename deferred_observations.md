@@ -65,3 +65,13 @@ and be implemented.
   pipeline runs without rate-limit errors since the REDDIT_COOKIE fix. Full test
   suite passes. No broken parser, no recurring data-losing failure, no
   substantive new capability evidenced. No change warranted.
+
+- **2026-07-24** — Zero errors in the last 7 days (error log has only historical
+  entries through 2026-06-30; all addressed by PRs #115–#117). framer_templates.py
+  parsed 52 templates in observe-only mode: 3 fell into "Other" (MaestroClass
+  "High Ticket Experience Sales Page", Assemble "Premium Event, Conference &
+  Meetup", Timeline "A clean timeline feed template."). Adding "event" and
+  "conference" keywords could rescue one of those, but 3/52 other-rate is not
+  substantive enough to justify a PR alone. Full test suite passes (426 tests).
+  Open PR #118 (scheduler observation from 2026-07-12) is still unmerged — no
+  new work to add to it. No change warranted.
