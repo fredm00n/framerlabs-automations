@@ -65,3 +65,11 @@ and be implemented.
   pipeline runs without rate-limit errors since the REDDIT_COOKIE fix. Full test
   suite passes. No broken parser, no recurring data-losing failure, no
   substantive new capability evidenced. No change warranted.
+
+- **2026-07-25** — Zero errors in the last 7 days. The error log contains 2,965
+  entries all from 2026-06-11 to 2026-06-30 (all older than 7 days); every issue
+  in that window was already addressed by PRs #115–#117. Both parsers are healthy:
+  framer_templates.py uses the July 2026 sectioned "items":[] format with multiple
+  fallbacks; reddit_leads.py RSS pipeline runs cleanly with REDDIT_COOKIE auth.
+  Full test suite passes (426 tests). No broken parser, no recurring data-losing
+  failure, no substantive new capability evidenced. No change warranted.
