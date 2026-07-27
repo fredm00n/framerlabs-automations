@@ -439,31 +439,34 @@ def _new_format_template(item: dict) -> dict:
 def _parse_rsc_data_array(body: str, seen: set, templates: list) -> int:
     """Parse template objects from embedded arrays in the RSC body.
 
-    Searches two key patterns to cover both the old and current RSC formats:
+    Searches three key patterns to cover old and current RSC formats:
 
     **Old format (``"data":``** — used between the June 2026 redesign and the
     July 2026 sectioned-layout change): the newest-templates grid was embedded as a
     client-query (SWR-style) cache under a ``"data"`` key.  Elements were full
     template objects (``{"type":"template","slug":...}``), newest-first, ~120 items.
 
-    **Current format (``"items":``** — July 2026+): Framer replaced the single
-    ``"data":[]`` array with named section arrays: ``"freshFinds"`` (newest),
-    ``"trending"``, ``"free"``, ``"rotatingCategory"``, and ``"rotatingFeature"``.
-    Each section delivers its templates directly in an ``"items":[]`` array whose
-    elements are template objects with the same field layout as before
-    (``"type":"template"``, ``"slug"``, ``"author"``, ``"attributes"``,
-    ``"publishedAt"``, ``"media"``, ``"introduction"``).  These items are NOT
-    wrapped in a ``"resource":{}`` outer object, which is why
-    ``_parse_rsc_body(... '"resource":{'...)`` only finds the 12 curated featured
-    blocks and silently misses all newest/trending/free templates.
+    **Intermediate format (``"items":``** — briefly used in July 2026): Framer
+    replaced the single ``"data":[]`` array with named section arrays; each section
+    delivered its templates in an ``"items":[]`` array whose elements were template
+    objects with ``"type":"template"``.
 
-    Both search keys share the same extraction loop and ``seen``-set dedup so
-    templates discovered via one path are not double-counted by the other.  A
+    **Current format (``"resources":``** — July 2026+): the section arrays
+    (``"freshFinds"``, ``"trending"``, ``"free"``, ``"rotatingCategory"``,
+    ``"rotatingFeature"``) now carry templates in a ``"resources":[]`` array.
+    Each element is a direct template object (``"type":"template"``, ``"slug"``,
+    ``"author"``, ``"attributes"``, ``"publishedAt"``, ``"media"``,
+    ``"introduction"``) — NOT wrapped in a ``"resource":{}`` outer object.
+    The curated featured section still uses a separate ``"items":[{"resource":{}}]``
+    structure found by ``_parse_rsc_body``.
+
+    All search keys share the same extraction loop and ``seen``-set dedup so
+    templates discovered via one path are not double-counted by another.  A
     non-zero return value indicates ``_extract_json_array`` parse failures
     (diagnostic only — hints at another format change).
     """
     parse_errors = 0
-    for key in ('"data":', '"items":'):
+    for key in ('"data":', '"items":', '"resources":'):
         pos = 0
         while True:
             idx = body.find(key, pos)

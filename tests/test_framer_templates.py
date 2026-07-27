@@ -186,6 +186,21 @@ def _rsc_items_array_body(items, section='freshFinds'):
     )
 
 
+def _rsc_resources_array_body(items, section='freshFinds', title='Fresh Finds'):
+    """Wrap template dicts in a current RSC fragment: ``...,"resources":[...],...``.
+
+    The current Framer RSC format (July 2026+) delivers section templates in a
+    ``"resources":[]`` array (not ``"items":[]``).  Each element is a direct
+    template object with ``"type":"template"`` (same field layout as
+    ``_data_array_item``), not wrapped in a ``{"resource":{...}}`` outer object.
+    """
+    return (
+        '5:["$","$1","' + section + '",'
+        '{"title":"' + title + '","seeAllHref":"/community/marketplace/templates/featured",'
+        '"resources":' + json.dumps(items) + '}]'
+    )
+
+
 class TestFetchFromRsc(unittest.TestCase):
 
     def _fetch(self, body):
@@ -2199,6 +2214,52 @@ class TestParseRscDataArray(unittest.TestCase):
         self.assertIn('only-data', slugs)
         self.assertIn('only-items', slugs)
         # ``shared`` must appear exactly once despite being in both arrays.
+        self.assertEqual(slugs.count('shared'), 1)
+
+    def test_resources_key_parses_templates(self):
+        # Current format (July 2026+): section arrays use "resources":[] not "items":[].
+        body = _rsc_resources_array_body([
+            _data_array_item('fresh-x', id_='20', published='2026-07-20T10:00:00Z'),
+            _data_array_item('fresh-y', id_='21', published='2026-07-20T09:00:00Z'),
+        ])
+        _, templates, errs = self._parse(body)
+        self.assertEqual([t['slug'] for t in templates], ['fresh-x', 'fresh-y'])
+        self.assertEqual(errs, 0)
+
+    def test_resources_key_ignores_non_template_elements(self):
+        # Non-template dicts inside a "resources":[] array must be skipped.
+        items = [_data_array_item('real', id_='1'),
+                 {'type': 'category', 'slug': 'saas', 'id': 'c3'}]
+        _, templates, _ = self._parse(_rsc_resources_array_body(items))
+        self.assertEqual([t['slug'] for t in templates], ['real'])
+
+    def test_resources_key_dedupes_against_seen(self):
+        # A slug already in ``seen`` must not be added again via the "resources" path.
+        body = _rsc_resources_array_body([_data_array_item('dup3', id_='99')])
+        _, templates, _ = self._parse(body, seen={'dup3'})
+        self.assertEqual(len(templates), 0)
+
+    def test_resources_key_followed_by_non_array_is_skipped(self):
+        # ``"resources":{...}`` (an object, not an array) must be skipped silently.
+        body = '"resources":{"slug":"x","type":"template"}'
+        _, templates, errs = self._parse(body)
+        self.assertEqual(len(templates), 0)
+        self.assertEqual(errs, 0)
+
+    def test_multiple_resources_arrays_merged_and_deduped(self):
+        # Multiple section "resources":[] arrays (freshFinds + trending) are all
+        # parsed, and a slug in both is counted only once.
+        shared = _data_array_item('shared', id_='1')
+        unique_fresh = _data_array_item('only-fresh', id_='2')
+        unique_trend = _data_array_item('only-trend', id_='3')
+        body = (_rsc_resources_array_body([shared, unique_fresh], section='freshFinds')
+                + '\n'
+                + _rsc_resources_array_body([shared, unique_trend], section='trending'))
+        _, templates, _ = self._parse(body)
+        slugs = [t['slug'] for t in templates]
+        self.assertIn('shared', slugs)
+        self.assertIn('only-fresh', slugs)
+        self.assertIn('only-trend', slugs)
         self.assertEqual(slugs.count('shared'), 1)
 
 
