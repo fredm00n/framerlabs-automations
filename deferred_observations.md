@@ -73,3 +73,8 @@ and be implemented.
   fallbacks; reddit_leads.py RSS pipeline runs cleanly with REDDIT_COOKIE auth.
   Full test suite passes (426 tests). No broken parser, no recurring data-losing
   failure, no substantive new capability evidenced. No change warranted.
+
+- **2026-08-15** — Zero errors in the last 7 days (error log is empty). Both parsers
+  are healthy; framer_templates.py and reddit_leads.py import cleanly. Full test
+  suite passes (431 tests). No broken parser, no recurring data-losing failure, no
+  substantive new capability evidenced. No change warranted.
