@@ -88,6 +88,10 @@ class TestShouldRetry(unittest.TestCase):
                 exc = urllib.error.HTTPError(None, code, 'err', {}, None)
                 self.assertTrue(shared._should_retry(exc))
 
+    def test_retries_on_403(self):
+        exc = urllib.error.HTTPError(None, 403, 'Blocked', {}, None)
+        self.assertTrue(shared._should_retry(exc))
+
     def test_does_not_retry_on_400(self):
         exc = urllib.error.HTTPError(None, 400, 'Bad Request', {}, None)
         self.assertFalse(shared._should_retry(exc))
