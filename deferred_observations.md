@@ -78,3 +78,16 @@ and be implemented.
   are healthy; framer_templates.py and reddit_leads.py import cleanly. Full test
   suite passes (431 tests). No broken parser, no recurring data-losing failure, no
   substantive new capability evidenced. No change warranted.
+
+- **2026-08-24** — All 121 errors in the last 7 days are Reddit HTTP 403 (116) /
+  429 (2) fetch failures in reddit_leads.py, and all come from three transient
+  Reddit anti-scraper blocks on a single day (2026-08-20 at 02:00, 11:45, 13:15
+  UTC). Each burst tripped the partial-failure alert to Discord ("All subreddit
+  feeds failed", "Majority of subreddit feeds failed (30/43)", "(42/43)"). The
+  shared `_should_retry` handler already retries 403 (added in PR #125), so these
+  entries represent runs where all 4 retry attempts were exhausted during the
+  block window. No errors in the 4 days since, so the anti-scraper block cleared
+  on its own. framer_templates.py parsed 120 templates and detected 4 new in an
+  observe-only run; full test suite passes (432 tests). No broken parser, no
+  recurring data-losing failure, no substantive new capability evidenced. No
+  change warranted.
