@@ -91,3 +91,10 @@ and be implemented.
   observe-only run; full test suite passes (432 tests). No broken parser, no
   recurring data-losing failure, no substantive new capability evidenced. No
   change warranted.
+
+- **2026-08-27** — Same 122 errors from 2026-08-20 (same Reddit 403 block event
+  already documented in the 2026-08-24 entry above) remain in the 7-day window;
+  no new errors since then. The block was transient and self-resolved. Both
+  parsers import cleanly; no test suite run needed given no code changes and no
+  new failures. No broken parser, no recurring data-losing failure, no substantive
+  new capability evidenced. No change warranted.
