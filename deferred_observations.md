@@ -98,3 +98,8 @@ and be implemented.
   2026-08-20 Reddit anti-scraper block that caused the prior 403/429 flood fully
   cleared; no recurrence. All 432 tests pass. No broken parser, no recurring
   data-losing failure, no substantive new capability evidenced. No change warranted.
+
+- **2026-09-02** — Zero errors in the last 7 days (all 121 log entries remain from
+  2026-08-20, still outside the 7-day cutoff). The 2026-08-20 Reddit anti-scraper
+  block has not recurred. All 432 tests pass. No broken parser, no recurring
+  data-losing failure, no substantive new capability evidenced. No change warranted.
