@@ -39,7 +39,8 @@
 ### Still deferred (not yet implemented)
 
 - **Smarter dedup** — currently one Notion API call per filtered post; could batch with OR filters once Notion supports them natively.
-- **Score/rank leads** — a rough confidence score could help the reviewer prioritise; skipped as Claude's reasoning handles this naturally.
+- **Score/rank leads** — a rough confidence score could help the reviewer prioritise; skipped as Claude's reasoning handles this naturally. Per-subreddit yield, measured over the whole review history on 2026-09-19 with `scripts/backtest_filter.py`, is the obvious input: `Webflow` 23.5%, `web_design` 18.9%, `framer` 17.6%, `webdesign` 9.5%, `DesignJobs` 8.2%, against a 2.95% overall baseline — a 20x spread nobody had looked at before.
+- **Collapse cross-posted duplicates** — an author posting the same request into six subreddits creates six rows with six distinct URLs, each reviewed separately and each notified separately (e.g. "Best place to find/hire a Website Designer" was approved in `webdesign`, `design`, `Webflow`, `digitalmarketing`, `css` and `SaaS`). Per-URL dedup cannot see this; a content hash or title-similarity check could. The count of distinct real leads is meaningfully below the approved-row count.
 - **Expanded `_JOB_SEEKER_SIGNALS`** — additional phrases like `"open to work"` could reduce false positives; skipped as Phase 2 review catches these.
 - **Notion 404 retries** — the dedup-check 404s are unusual but retrying 404 would mask genuine misconfiguration. Existing error isolation handles this safely.
 

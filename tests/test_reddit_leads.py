@@ -19,6 +19,7 @@ os.environ['ENABLE_SIDE_EFFECTS'] = '1'
 
 from scripts.reddit_leads import (
     _ALWAYS_EXCLUDE_WORD_START_PHRASES,
+    _LOW_YIELD,
     _SSL_CTX,
     _VALID_STATUSES,
     _clean_html,
@@ -27,6 +28,9 @@ from scripts.reddit_leads import (
     _is_valid_iso8601_date,
     _reddit_cookie_header,
     _ssl_context_for,
+    _WEB_SIGNALS,
+    _WEB_SUBJECT_STRONG,
+    _WEB_SUBJECT_WEAK,
     cli,
     fetch_reddit_posts,
     get_lead_by_id,
@@ -346,6 +350,87 @@ class TestPassesLightFilter(unittest.TestCase):
         # Regression guard: if someone moves 'rate my' back into _ALWAYS_EXCLUDE
         # (plain substring matching) the original 'migrate my' bug returns.
         self.assertIn('rate my', _ALWAYS_EXCLUDE_WORD_START_PHRASES)
+
+    # --- Hiring signal is required everywhere ---
+    #
+    # Every approved lead on record carries one, so requiring it costs no
+    # recall.  Before this, the job-board group passed any post that merely
+    # mentioned web work.
+
+    def test_hiring_sub_fails_without_hire_signal(self):
+        # Reads like shop talk, not a request for work.
+        self.assertFalse(passes_light_filter(
+            'My website finally launched',
+            'Spent months on the landing page and the portfolio section.',
+            'forhire',
+        ))
+
+    def test_every_group_requires_a_hire_signal(self):
+        # Same web-heavy, intent-free post across one subreddit per group.
+        for sub in ('forhire', 'webdev', 'Webflow', 'smallbusiness',
+                    'marketing', 'restaurateur', 'unknownsub'):
+            with self.subTest(sub=sub):
+                self.assertFalse(passes_light_filter(
+                    'Our new website is live',
+                    'Rebuilt the landing page in Framer. Cost us $4000.',
+                    sub,
+                ))
+
+    # --- Low-yield subreddits need an explicit web subject ---
+
+    def test_low_yield_sub_rejects_weak_signal_only(self):
+        # r/HungryArtists is 692 saved posts and no approved lead: genuine paid
+        # commissions that clear the hire and payment gates but are not web
+        # work.  'portfolio' is the word that used to let them through.
+        self.assertFalse(passes_light_filter(
+            '[Hiring] Looking for an artist for character illustrations',
+            'Paying $300 per piece. Send your portfolio, budget is flexible.',
+            'HungryArtists',
+        ))
+
+    def test_low_yield_sub_still_passes_real_web_request(self):
+        # The gate is the subject of the work, not the subreddit — a real
+        # website request in the same subreddit still gets through.
+        self.assertTrue(passes_light_filter(
+            '[Hiring] Need a website built for my illustration studio',
+            'Looking to hire someone to build a portfolio website. Budget $1500.',
+            'HungryArtists',
+        ))
+
+    def test_low_yield_sub_rejects_react_only_mention(self):
+        # 'react' is the worst signal in the set: 0.8% of posts carrying it
+        # were approved, against a 2.95% baseline.
+        self.assertFalse(passes_light_filter(
+            'Looking for a react dev to finish our dashboard',
+            'Internal tool, no design work. Paying $60/hr.',
+            'graphic_design',
+        ))
+
+    def test_proven_sub_still_accepts_weak_signal(self):
+        # The weak signals are not deleted — in subreddits with a track record
+        # they still count, because there the surrounding context is different.
+        self.assertTrue(passes_light_filter(
+            '[Hiring] Need help with our frontend',
+            'Looking for someone to clean up the css on our app. $50/hr.',
+            'forhire',
+        ))
+
+    # --- Signal-set guards ---
+
+    def test_weak_signals_are_not_strong(self):
+        # Regression guard: moving any of these back into the strong set
+        # re-opens the low-yield subreddits to baseline-noise matches.
+        for weak in ('react', 'html', 'css', 'portfolio', 'frontend', 'web app'):
+            with self.subTest(weak=weak):
+                self.assertNotIn(weak, _WEB_SUBJECT_STRONG)
+                self.assertIn(weak, _WEB_SUBJECT_WEAK)
+
+    def test_web_signals_is_the_union(self):
+        self.assertEqual(_WEB_SIGNALS, _WEB_SUBJECT_STRONG | _WEB_SUBJECT_WEAK)
+
+    def test_hungryartists_is_low_yield(self):
+        # 692 saved, 0 approved — the single largest source of reviewer load.
+        self.assertIn('HungryArtists', _LOW_YIELD)
 
     # --- Unknown subreddit ---
 

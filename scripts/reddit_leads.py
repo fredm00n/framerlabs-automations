@@ -78,6 +78,36 @@ _INDUSTRY = frozenset({
     'legaladvice', 'medicine', 'IndieDev', 'gamedev',
 })
 
+# Subreddits that have produced no approved lead in the entire review history
+# despite carrying real volume.  Counts are saved-posts / approved, measured
+# over the Reddit Leads DB on 2026-09-19 (overall approval baseline 2.95%):
+#
+#   HungryArtists 692/0   graphic_design 201/0   SEO 127/0   startups 83/0
+#   PPC 69/0   nocode 58/0   legaladvice 43/0   gamedev 33/0
+#   Entrepreneur 33/0   solopreneur 29/0   UI_Design 27/0   digitalnomad 25/0
+#
+# Together they account for 1,420 of the 4,238 reviewed posts — a third of
+# everything the light filter has ever saved and everything the Phase 2
+# reviewer has ever graded — for no leads at all.  r/HungryArtists alone is
+# 692 of them: it is an art-commission board, and its posts clear the hiring
+# and payment gates easily (687 of the 692 match a hire signal, 679 also match
+# a payment signal) because they *are* genuine paid commissions, just not for
+# web work.  Tightening the hiring keywords therefore does nothing here; what
+# separates these posts from leads is the subject of the job.
+#
+# They are not dropped — Framer work can surface anywhere, and a subreddit with
+# no history is not the same as a subreddit with no potential — but they must
+# name the subject of the work explicitly instead of qualifying on a passing
+# mention of 'portfolio' or 'react'.  Subreddits with fewer than 25 reviewed
+# posts are left alone: at this baseline, zero approvals out of 20 is not
+# evidence of anything.
+_LOW_YIELD = frozenset({
+    'HungryArtists', 'graphic_design', 'SEO', 'startups', 'PPC', 'nocode',
+    'legaladvice', 'gamedev', 'Entrepreneur', 'solopreneur', 'UI_Design',
+    'digitalnomad',
+})
+
+
 REDDIT_FEEDS: dict[str, str] = {
     s: f'https://www.reddit.com/r/{s}/.rss'
     for s in (*_HIRING, *_DESIGN_TECH, *_NOCODE, *_BUSINESS, *_MARKETING, *_INDUSTRY)
@@ -88,11 +118,29 @@ REDDIT_FEEDS: dict[str, str] = {
 # Light filter signal sets
 # ---------------------------------------------------------------------------
 
-_WEB_SIGNALS = frozenset({
-    'website', 'web design', 'web designer', 'web developer',
-    'landing page', 'framer', 'figma', 'portfolio', 'frontend',
-    'ui/ux', 'web app', 'react', 'html', 'css',
+# Web-subject signals, split by the share of posts carrying them that Phase 2
+# later approved.  Measured over the 4,238 reviewed posts in the Reddit Leads
+# DB (2026-03-28 .. 2026-09-19), against an overall approval baseline of 2.95%:
+#
+#   ui/ux 20.4%   web design 15.7%   framer 15.0%   web developer 11.8%
+#   figma  9.1%   landing page 5.0%  website  4.4%
+#   portfolio 3.9%   frontend 2.9%   web app 2.2%   html 2.0%   css 1.9%
+#   react 0.8%
+#
+# The first group names the *subject* of the work and carries real signal.  The
+# second group sits at or below the baseline — a post is no more likely to be a
+# lead for containing them — so they are kept only as supporting evidence in
+# subreddits that have a track record of producing leads, and are not enough on
+# their own in the ones that do not (see ``_LOW_YIELD``).
+_WEB_SUBJECT_STRONG = frozenset({
+    'website', 'web site', 'web page', 'webpage',
+    'web design', 'web designer', 'web developer',
+    'landing page', 'framer', 'figma', 'webflow', 'ui/ux',
 })
+_WEB_SUBJECT_WEAK = frozenset({
+    'portfolio', 'frontend', 'web app', 'react', 'html', 'css',
+})
+_WEB_SIGNALS = _WEB_SUBJECT_STRONG | _WEB_SUBJECT_WEAK
 _HIRE_SIGNALS = frozenset({
     'hire', 'hiring', 'looking for', 'need a ', 'need someone', 'seeking',
     'want to hire', 'want someone', 'need help with', 'looking to hire',
@@ -165,33 +213,42 @@ def passes_light_filter(title: str, content: str, subreddit: str) -> bool:
     if _has_word_start_phrase(text, _ALWAYS_EXCLUDE_WORD_START_PHRASES):
         return False
 
+    # Every one of the 125 approved leads in the review history carries a hiring
+    # signal, in every subreddit group — so requiring one costs no recall at all
+    # and drops posts that merely discuss web work without asking for any.  The
+    # group rules below previously each spelled this out (or, for the job-board
+    # group, omitted it); hoisting it makes the shared requirement explicit.
+    if not _has(text, _HIRE_SIGNALS):
+        return False
+
+    # Subreddits with no approved lead on record have to name the subject of the
+    # work.  A passing mention of 'portfolio' or 'react' is not enough there:
+    # those words sit at the approval baseline, so they say nothing about
+    # whether a post is a lead, and in these subreddits they are the reason the
+    # post was saved at all.
+    if subreddit in _LOW_YIELD and not _has(text, _WEB_SUBJECT_STRONG):
+        return False
+
     if subreddit in _HIRING:
         # Job boards: any post with a web/design tech signal is worth reviewing
         return _has(text, _WEB_SIGNALS)
 
     if subreddit in _DESIGN_TECH:
-        # Design/tech communities: need framer + intent, or hiring + payment
-        return (
-            (_has(text, _FRAMER_SIGNALS) and _has(text, _HIRE_SIGNALS))
-            or (_has(text, _HIRE_SIGNALS) and _has(text, _PAYMENT_SIGNALS))
-        )
+        # Design/tech communities: need framer, or a payment signal
+        return _has(text, _FRAMER_SIGNALS) or _has(text, _PAYMENT_SIGNALS)
 
     if subreddit in _NOCODE:
-        # No-code tools: hiring + web signal + payment (more specific to cut noise)
-        return (
-            _has(text, _HIRE_SIGNALS)
-            and _has(text, _WEB_SIGNALS)
-            and _has(text, _PAYMENT_SIGNALS)
-        )
+        # No-code tools: web signal + payment (more specific to cut noise)
+        return _has(text, _WEB_SIGNALS) and _has(text, _PAYMENT_SIGNALS)
 
     if subreddit in _BUSINESS:
-        return _has(text, _BUSINESS_WEB) and _has(text, _HIRE_SIGNALS)
+        return _has(text, _BUSINESS_WEB)
 
     if subreddit in _MARKETING | _INDUSTRY:
-        return _has(text, _MARKETING_WEB) and _has(text, _HIRE_SIGNALS)
+        return _has(text, _MARKETING_WEB)
 
-    # Unknown subreddit: require all three signals
-    return _has(text, _WEB_SIGNALS) and _has(text, _HIRE_SIGNALS) and _has(text, _PAYMENT_SIGNALS)
+    # Unknown subreddit: require a web subject and a payment signal too
+    return _has(text, _WEB_SIGNALS) and _has(text, _PAYMENT_SIGNALS)
 
 
 # ---------------------------------------------------------------------------
