@@ -4,7 +4,8 @@
   "scripts": {
     "framer-templates": "python3 scripts/framer_templates.py",
     "reddit-leads": "python3 scripts/reddit_leads.py",
-    "backtest-filter": "python3 scripts/backtest_filter.py"
+    "backtest-filter": "python3 scripts/backtest_filter.py",
+    "log-observation": "python3 scripts/log_observation.py"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -68,8 +68,11 @@ issues and propose fixes. Critical errors are also sent to `DISCORD_ALERTS_WEBHO
 for immediate visibility (only from the production cron — sandbox runs are observe-only,
 see Side-effect gating above).
 
-Log rotation: the self-improvement session removes entries older than 7 days after reading
-them, then commits the trimmed file.
+Log rotation: `scripts/log_observation.py` removes entries older than 7 days and commits the
+trimmed file. The self-improvement session runs it at the end of every session (SCHEDULER.md
+Step 4), in the same commit that records what the session found, so the rotation happens even
+on the runs that change nothing. An entry whose timestamp cannot be parsed is kept, not
+dropped — an entry we cannot date is more likely a bug worth seeing than noise worth deleting.
 
 ### Alert state
 Cross-run Discord alert suppression is persisted in script-specific files under `state/`
@@ -268,7 +271,10 @@ Read CLAUDE.md and SCHEDULER.md, then follow the instructions in SCHEDULER.md.
 
 ## Development workflow
 
-- All changes go through PRs — never push directly to `main`
+- All changes go through PRs — never push directly to `main`. The single exception is
+  `scripts/log_observation.py`, which the self-improvement loop runs at the end of every
+  session to commit its own notes and trim the error log; it touches no code, and routing
+  it through a PR would mean merging a chore commit every day
 - Branch naming: `claude/<description>-<random-suffix>`
 - Each logical improvement = one PR
 - The scheduler auto-creates PRs when it finds improvements; human reviews and merges
