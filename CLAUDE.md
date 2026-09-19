@@ -158,16 +158,39 @@ Monitors Reddit RSS feeds across 43 subreddits for potential Framer freelance le
 - **Dedup:** Per-URL Notion query, only for posts that passed the light filter (~10–30/run)
 
 **Subreddit categories and filter logic:**
+
+Every post must clear three gates in order:
+
+1. **Always exclude**: tutorials, feedback requests, complaints, framer pricing questions, job seekers
+2. **Hiring signal required**, in every subreddit. Every approved lead on record carries one, so
+   requiring it costs no recall and drops posts that discuss web work without asking for any.
+3. **Low-yield subreddits need an explicit web subject.** `_LOW_YIELD` lists the subreddits that have
+   produced no approved lead across the whole review history despite 25+ reviewed posts
+   (`HungryArtists`, `graphic_design`, `SEO`, `startups`, `PPC`, `nocode`, `legaladvice`, `gamedev`,
+   `Entrepreneur`, `solopreneur`, `UI_Design`, `digitalnomad`). There a post must match
+   `_WEB_SUBJECT_STRONG`; a passing mention of `portfolio` or `react` is not enough. They stay in the
+   feed list — a subreddit with no history is not one with no potential.
+
+Then the per-group rule:
+
 - *Hiring subreddits* (`forhire`, `hiring`, `DesignJobs`, `freelance`, `HungryArtists`, `jobbit`):
   pass if any web/design signal present
 - *Design/tech subreddits* (`framer`, `figma`, `webdev`, `web_design`, etc.):
-  pass if framer + hiring signal, OR hiring + payment signal
+  pass if framer signal OR payment signal
 - *No-code subreddits* (`nocode`, `Webflow`, `Bubble`, etc.):
-  pass if hiring + web signal + payment signal
+  pass if web signal + payment signal
 - *Business subreddits* (`startups`, `SaaS`, `Entrepreneur`, etc.):
-  pass if website/landing page + hiring signal
-- *Marketing/industry subreddits*: pass if website + hiring signal
-- **Always exclude**: tutorials, feedback requests, complaints, framer pricing questions, job seekers
+  pass if website/landing page signal
+- *Marketing/industry subreddits*: pass if website signal
+- *Unknown subreddit*: pass if web signal + payment signal
+
+**Web signals are split by measured precision.** `_WEB_SUBJECT_STRONG` (`website`, `web design`,
+`web developer`, `landing page`, `framer`, `figma`, `webflow`, `ui/ux`, …) names the subject of the
+work. `_WEB_SUBJECT_WEAK` (`portfolio`, `frontend`, `web app`, `react`, `html`, `css`) sits at or
+below the overall approval baseline — a post carrying one is no more likely to be a lead than any
+other — so those count only in subreddits with a track record. `_WEB_SIGNALS` is the union, and is
+what the per-group rules above use. Do not move a weak signal into the strong set without a backtest
+run showing it earns its place.
 
 **Fields tracked:** Name, URL, Subreddit (select), Content, Status (select: pending/approved/rejected/failed),
 Post Date, Discovered, Review Notes, Notified (checkbox). The `failed` status is a save-failed sentinel
@@ -180,13 +203,23 @@ dedup checks skip it instead of retrying the same bad payload every run.
 - `python3 scripts/reddit_leads.py --update-status PAGE_ID STATUS NOTES` — approve/reject
 - `python3 scripts/reddit_leads.py --notify PAGE_ID` — send Discord embed + mark notified
 
+**Measuring the filter:** `scripts/backtest_filter.py` replays `passes_light_filter` over every post
+the pipeline has ever saved. The Notion DB is a labelled corpus — each row passed the filter at the
+time and carries the verdict Phase 2 later gave it — so replaying the current rules over it measures
+exactly what a change would have cut: an approved row the filter now drops is a lead that would have
+been lost, a rejected row it drops is reviewer load saved. Run `--fetch` once to cache the corpus to
+`.cache/lead_corpus.jsonl` (gitignored — it is other people's post content), then re-run freely while
+iterating. It exits non-zero if any approved lead would be dropped. **Any change to the filter sets or
+the group rules must quote its numbers.**
+
 **Reddit cookie auth (avoids HTTP 429):** Reddit serves anonymous/cookieless RSS from a brutal anti-scraper bucket (~1 request/60s per IP), so fetching 43 feeds in a burst from a GitHub Actions datacenter IP produces a wall of HTTP 429s. Setting the `REDDIT_COOKIE` env var (a logged-out browser `edgebucket`+`loid` cookie) moves requests into the normal visitor bucket (~100 requests/10 min); it keys on the `loid`, not the IP, so it works from any runner — no proxy, VPS, or OAuth needed. As a secondary defense the script also paces requests `_INTER_FEED_DELAY` (1.5s) apart and sends a browser `User-Agent` (`_REDDIT_USER_AGENT`; Reddit 403s without one). The cookie is injected as a `Cookie` header by `http_get` **only for `reddit.com` hosts** (`_reddit_cookie_header` / `_is_reddit_host`), never on the Notion API calls that share the same wrapper. The variable is optional — unset, the script runs exactly as before (and will 429 under load). It is stored as a GitHub Actions secret and **never committed** (this repo is public). `loid` is multi-year; if 429s return, re-harvest from a logged-out browser (DevTools → Network → any reddit.com request → Request Headers → Cookie) and update the secret.
 
 **Partial failure alerting:** If >50% of subreddit feeds fail to fetch (e.g. Reddit rate-limiting or a partial network issue), a warning is sent to `DISCORD_ALERTS_WEBHOOK_URL`. If all feeds fail, an error-level alert is sent instead.
 
 **Deferred improvements** (still open):
 - Smarter dedup — one Notion API call per filtered post; could batch with OR filters
-- Score/rank leads — a confidence score could help the reviewer prioritise
+- Score/rank leads — a confidence score could help the reviewer prioritise; measured per-subreddit yield would be the obvious input (`Webflow` 23.5%, `web_design` 18.9%, `framer` 17.6% against a 2.95% baseline)
+- Collapse cross-posted duplicates — one request posted into six subreddits becomes six rows with six URLs, each reviewed and notified separately; per-URL dedup cannot see it
 - Expanded `_JOB_SEEKER_SIGNALS` — more phrases could reduce false positives
 - Notion 404 retries — considered but not added (would mask genuine misconfiguration)
 
