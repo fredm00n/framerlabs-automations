@@ -21,8 +21,8 @@ posting to Discord. Use it to observe behaviour — it will not produce real out
 looking for exactly one of the three things in Step 2. If you don't find one, go
 straight to Step 4 and exit.
 
-While here, trim entries older than 7 days from `logs/errors.jsonl`. Do not open a
-PR *just* to trim the log — bundle the trim with a real change, or skip it.
+Do not trim `logs/errors.jsonl` by hand — Step 4 does it, on every run, as part
+of the same commit that records what you found.
 
 ## Step 2 — Is there something genuinely worth doing?
 
@@ -43,9 +43,8 @@ Open a PR **only** if you find one of these three:
    *substantive* (a meaningfully better filter), not a single-keyword tweak
    dressed up as a PR.
 
-If none of these apply — the normal case — **do not open a PR.** Note anything you
-spotted but chose not to act on in `deferred_observations.md` (one dated line) and
-exit.
+If none of these apply — the normal case — **do not open a PR.** Go to Step 4 and
+record what you looked at.
 
 ## Step 2b — Do NOT do these (this is what bloated the codebase)
 
@@ -98,7 +97,28 @@ the problem, the fix, the user-visible effect. No function-name lists, no intern
 jargon. If the owner can't tell from the title why they'd want this, it probably
 isn't worth merging.
 
-## Step 4 — Exit
+## Step 4 — Record the run and exit
 
-If Step 2 found nothing, exit cleanly. Doing nothing is the expected result, not a
-wasted run.
+**Every run ends here, whether or not it opened a PR.** What you looked at is the
+only memory the next session has: a note left in this VM dies with the VM, and
+tomorrow's session starts cold. So always run, from the repo root, on `main`:
+
+```bash
+python3 scripts/log_observation.py "<what you checked and why nothing met the bar>"
+```
+
+That one command appends a dated line to `deferred_observations.md`, trims
+`logs/errors.jsonl` of entries older than 7 days, commits both, and pushes to
+`main` with the same rebase-and-retry ladder the workflows use (both crons push to
+`main` every 15 minutes, so a bare push loses the race often enough to matter).
+
+This is the one sanctioned direct push to `main`; it is explicitly exempt from the
+"never push directly to main" rule in CLAUDE.md because it touches no code. Do not
+open a PR for it.
+
+If you opened a PR in Step 3, run `git checkout main` first — the note and the log
+trim belong on `main`, not on your branch, and the script refuses to commit from
+anywhere else. It exits non-zero if it cannot publish; if that happens, say so in
+your final message rather than exiting quietly, or the run leaves no trace.
+
+Then exit. Doing nothing else is the expected result, not a wasted run.
