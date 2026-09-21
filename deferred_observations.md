@@ -105,3 +105,5 @@ and be implemented.
   no substantive new capability evidenced. No change warranted.
 
 - **2026-09-20** — All 121 errors in the log are Reddit HTTP 403/429 fetch failures from 2026-08-20 (31 days ago), already reviewed by the 2026-09-06 session. Those were transient anti-scraper blocks that cleared within the same day; no errors since. The log entries are outside the 7-day retention window and are trimmed now. framer_templates.py and reddit_leads.py both import cleanly. No broken parser, no recurring data-losing failure, no substantive new capability evidenced. No change warranted.
+
+- **2026-09-21** — Zero errors in the last 7 days — the error log is empty (121 old entries from 2026-08-20 trimmed). Both scripts import cleanly. No broken parser, no recurring data-losing failure, no substantive new capability evidenced. No change warranted.
