@@ -1,0 +1,1 @@
+{"timestamp": "2026-10-10T07:03:42.593755+00:00", "script": "reddit_leads", "severity": "warning", "repo": "framerlabs-automations", "message": "Failed to fetch r/forhire", "context": {"feed_url": "https://www.reddit.com/r/forhire/.rss", "status": 429, "body_preview": "", "error": "HTTP Error 429: Too Many Requests"}}
