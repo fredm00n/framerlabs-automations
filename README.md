@@ -9,6 +9,8 @@
 
 Community automations for the Framer ecosystem — powered by Python, GitHub Actions, and Claude AI.
 
+The scripts post new templates and approved leads to the Framer Labs Discord. [Join the Discord](https://discord.gg/5Kgznx7PN9) to follow them.
+
 ## What this is
 
 A set of scripts that monitor things useful to the Framer community, persist state in Notion, and post to Discord. The architecture has two tiers:
