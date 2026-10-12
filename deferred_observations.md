@@ -134,3 +134,5 @@ and be implemented.
 - **2026-10-04** — Zero errors in the last 7 days — error log is empty. No open PRs. Both scripts import cleanly. No broken parser, no recurring data-losing failure, no substantive new capability evidenced. No change warranted.
 
 - **2026-10-05** — Zero errors in the last 7 days — error log is empty. No open PRs. Both scripts import cleanly. No broken parser, no recurring data-losing failure, no substantive new capability evidenced. No change warranted.
+
+- **2026-10-12** — One transient HTTP 429 warning for r/forhire in logs/errors.jsonl (self-healed, no data loss). Both scripts import cleanly; framer_templates.py fetched 64 templates with 2 new found (observe-only). No broken parser, no recurring data-losing failures, no substantive new capability evidenced. No change warranted.
