@@ -165,7 +165,8 @@ class TestMain(unittest.TestCase):
         with open(self.obs, 'w') as f:
             f.write('# Deferred observations\n')
         with open(self.log, 'w') as f:
-            f.writelines([_entry(_NOW - timedelta(days=30)), _entry(_NOW)])
+            now = datetime.now(timezone.utc)
+            f.writelines([_entry(now - timedelta(days=30)), _entry(now)])
 
     def _argv(self, *extra):
         return ['log_observation.py', 'Nothing broken today.',
