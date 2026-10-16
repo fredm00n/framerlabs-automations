@@ -32,6 +32,9 @@ Open a PR **only** if you find one of these three:
    or silencing the bot — above all, **the parser no longer finding
    templates/leads because Framer's RSC format or Reddit's RSS changed.** This is
    the single most important thing to catch. Fix the parser so it works again.
+   A parser can break without failing: "64 templates fetched, 0 new" every day is
+   not healthy, since Framer publishes dozens a day. A `stale_feed` or
+   `api_fallback` warning from `framer_templates` in the error log is exactly this.
 2. **A recurring, data-losing failure.** The same error appears 3+ times in the
    7-day window AND causes permanent loss (a template/lead silently missed, a
    notification permanently dropped). A transient error that self-healed on retry

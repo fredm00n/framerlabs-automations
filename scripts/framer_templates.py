@@ -63,8 +63,89 @@ _MARKETPLACE_PROFILE_URL = f'{_MARKETPLACE_BASE}/profiles/'
 # Fetching & parsing
 # ---------------------------------------------------------------------------
 
+# Since 30 Sep 2026 the marketplace page no longer server-renders a newest list:
+# the RSC grid is a "popular" blend whatever ``?sort=`` says, so parsing it found
+# a handful of new templates a day instead of ~60.  The page's own client fetches
+# its grid from this JSON endpoint.  With no ``sort`` param it returns templates
+# strictly newest-first by ``publishedAt`` (``sort=recent`` is a blend of newest
+# and ranked, ``sort=popular`` the trending mix).  It only accepts some ``limit``
+# values (24, 64 and 120 work; 12 and 50 return HTTP 400); 120 covers about a
+# day and a half of publishing, well over the gap between cron runs.
+_RESOURCES_API_URL = 'https://www.framer.com/creators/api/unified/resources/'
+_RESOURCES_API_LIMIT = 120
+_API_HEADERS = {
+    'Accept': 'application/json',
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+}
+
+# Framer publishes dozens of templates a day, so a newest template older than
+# this means the feed we read has stopped being the newest feed.
+_STALE_FEED_HOURS = 48
+
+
 def fetch_framer_templates() -> list[dict]:
+    try:
+        templates = fetch_from_api()
+    except Exception as e:
+        templates = []
+        api_error = str(e)
+    else:
+        api_error = 'returned no templates'
+    if templates:
+        return templates
+    # The RSC page is a fallback only: it is not a newest feed, so a run that
+    # lands here finds few new templates.  Make that loud rather than silent.
+    print(f'WARNING: Framer resources API {api_error}; falling back to the RSC page.')
+    error_log.log_error(
+        'framer_templates', 'warning',
+        'Framer resources API failed; fell back to the RSC page, which is not a newest feed',
+        {'error': api_error},
+    )
+    _warn_discord(
+        f'WARNING: framer_templates.py — Framer resources API {api_error};'
+        ' fell back to the RSC page, which misses most new templates.',
+        dedup_key='framer_templates:api_fallback',
+    )
     return fetch_from_rsc()
+
+
+def fetch_from_api() -> list[dict]:
+    """Fetch the newest templates from Framer's resources JSON API, newest first."""
+    query = urllib.parse.urlencode({'limit': _RESOURCES_API_LIMIT, 'type': 'template'})
+    print('Fetching Framer marketplace via resources API...')
+    payload = json.loads(http_get(f'{_RESOURCES_API_URL}?{query}', headers=_API_HEADERS))
+    items = payload.get('data') if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        raise ValueError('resources API response has no "data" list')
+    templates: list[dict] = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict) or item.get('type', 'template') != 'template':
+            continue
+        template = _new_format_template(item)
+        if template['slug'] and template['slug'] not in seen:
+            seen.add(template['slug'])
+            templates.append(template)
+    print(f'Parsed {len(templates)} templates from the resources API.')
+    return templates
+
+
+def _newest_age_hours(templates: list[dict], now: datetime | None = None) -> float | None:
+    """Hours since the most recently published template, or None if none is dated."""
+    dates = []
+    for t in templates:
+        raw = t.get('published_at') or ''
+        try:
+            dt = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+        except ValueError:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dates.append(dt)
+    if not dates:
+        return None
+    now = now or datetime.now(timezone.utc)
+    return (now - max(dates)).total_seconds() / 3600
 
 
 _RSC_HEADERS = {
@@ -1270,6 +1351,21 @@ def main() -> None:
             f'WARNING: only {len(templates)} template(s) parsed from Framer RSC'
             ' — format may have changed. Check GitHub Actions logs.',
             dedup_key='framer_templates:few_templates_parsed',
+        )
+    age = _newest_age_hours(templates)
+    if age is not None and age > _STALE_FEED_HOURS:
+        # Parsing still "works" here, so nothing else would flag it: this is how
+        # the Sep 2026 switch to a popular-only page went unnoticed for weeks.
+        print(f'WARNING: newest fetched template was published {age:.0f}h ago.')
+        error_log.log_error(
+            'framer_templates', 'warning',
+            f'Newest fetched template is {age:.0f}h old — the feed is no longer the newest list',
+            {'newest_age_hours': round(age, 1), 'templates_fetched': len(templates)},
+        )
+        _warn_discord(
+            f'WARNING: framer_templates.py — the newest template Framer returned was published'
+            f' {age:.0f}h ago. The feed is probably no longer sorted by newest; check the parser.',
+            dedup_key='framer_templates:stale_feed',
         )
     # Wrap the seen-slugs fetch so a Notion misconfiguration (deleted DB,
     # revoked integration token, wrong NOTION_DATABASE_ID secret) surfaces

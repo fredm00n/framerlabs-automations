@@ -1467,6 +1467,107 @@ class TestNotifyDiscordBatchRateLimitPacing(unittest.TestCase):
 # main (integration)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# fetch_from_api / fetch_framer_templates / _newest_age_hours
+# ---------------------------------------------------------------------------
+
+def _api_item(slug, published='2026-10-16T12:00:00.000Z', price=None, type_='template'):
+    """One element of the resources API ``data`` list, as Framer returns it."""
+    return {
+        'id': '1', 'title': slug.title(), 'introduction': f'{slug} intro', 'slug': slug,
+        'author': {'name': 'Ann', 'slug': 'ann'},
+        'media': [{'type': 'image', 'url': f'https://img/{slug}.png'}],
+        'publishedAt': published, 'type': type_,
+        'attributes': {'price': price, 'previewUrl': f'https://{slug}.framer.website/'},
+    }
+
+
+class TestFetchFromApi(unittest.TestCase):
+
+    def _fetch(self, payload):
+        with patch('framer_templates.http_get', return_value=json.dumps(payload)) as get:
+            return ft.fetch_from_api(), get
+
+    def test_maps_fields_and_keeps_newest_first_order(self):
+        templates, _ = self._fetch({'data': [
+            _api_item('new-one', '2026-10-16T13:00:00Z', price='29'),
+            _api_item('older', '2026-10-16T10:00:00Z'),
+        ]})
+        self.assertEqual([t['slug'] for t in templates], ['new-one', 'older'])
+        first = templates[0]
+        self.assertEqual(first['price'], '$29')
+        self.assertEqual(templates[1]['price'], 'Free')
+        self.assertEqual(first['author'], 'Ann')
+        self.assertEqual(first['meta_title'], 'new-one intro')
+        self.assertEqual(first['thumbnail'], 'https://img/new-one.png')
+        self.assertEqual(first['demo_url'], 'https://new-one.framer.website/')
+        self.assertEqual(first['published_at'], '2026-10-16T13:00:00Z')
+        self.assertEqual(first['url'], f'{ft._MARKETPLACE_TEMPLATES_URL}new-one/')
+
+    def test_requests_unsorted_template_feed(self):
+        # No sort param: that is the strictly newest-first ordering.
+        _, get = self._fetch({'data': []})
+        url = get.call_args[0][0]
+        self.assertIn('type=template', url)
+        self.assertIn(f'limit={ft._RESOURCES_API_LIMIT}', url)
+        self.assertNotIn('sort=', url)
+
+    def test_skips_non_templates_and_duplicate_slugs(self):
+        templates, _ = self._fetch({'data': [
+            _api_item('a'), _api_item('a'), _api_item('plug', type_='plugin'), 'junk',
+        ]})
+        self.assertEqual([t['slug'] for t in templates], ['a'])
+
+    def test_missing_data_list_raises(self):
+        with self.assertRaises(ValueError):
+            self._fetch({'error': {'message': 'Bad request'}})
+
+
+class TestFetchFramerTemplates(unittest.TestCase):
+
+    def test_uses_api_when_it_returns_templates(self):
+        with patch('framer_templates.fetch_from_api', return_value=[{'slug': 'a'}]), \
+             patch('framer_templates.fetch_from_rsc') as rsc, \
+             patch('framer_templates._warn_discord') as warn:
+            self.assertEqual(ft.fetch_framer_templates(), [{'slug': 'a'}])
+        rsc.assert_not_called()
+        warn.assert_not_called()
+
+    def test_falls_back_to_rsc_loudly_when_api_fails(self):
+        with patch('framer_templates.fetch_from_api', side_effect=Exception('HTTP 400')), \
+             patch('framer_templates.fetch_from_rsc', return_value=[{'slug': 'r'}]), \
+             patch('framer_templates._warn_discord') as warn:
+            self.assertEqual(ft.fetch_framer_templates(), [{'slug': 'r'}])
+        warn.assert_called_once()
+        self.assertIn('HTTP 400', warn.call_args[0][0])
+        self.assertEqual(warn.call_args[1]['dedup_key'], 'framer_templates:api_fallback')
+
+    def test_falls_back_when_api_returns_nothing(self):
+        with patch('framer_templates.fetch_from_api', return_value=[]), \
+             patch('framer_templates.fetch_from_rsc', return_value=[{'slug': 'r'}]) as rsc, \
+             patch('framer_templates._warn_discord') as warn:
+            ft.fetch_framer_templates()
+        rsc.assert_called_once()
+        warn.assert_called_once()
+
+
+class TestNewestAgeHours(unittest.TestCase):
+
+    NOW = ft.datetime(2026, 10, 16, 12, 0, tzinfo=ft.timezone.utc)
+
+    def test_age_of_most_recent_dated_template(self):
+        templates = [
+            {'published_at': '2026-10-14T12:00:00Z'},
+            {'published_at': '2026-10-16T09:00:00.000Z'},
+            {'published_at': ''},
+        ]
+        self.assertAlmostEqual(ft._newest_age_hours(templates, self.NOW), 3.0)
+
+    def test_none_when_nothing_is_dated(self):
+        self.assertIsNone(ft._newest_age_hours([{'published_at': ''}, {}], self.NOW))
+        self.assertIsNone(ft._newest_age_hours([{'published_at': 'garbage'}], self.NOW))
+
+
 _TEMPLATES = [
     {
         'slug': 'template-a', 'title': 'Template A',
@@ -1582,6 +1683,24 @@ class TestMain(unittest.TestCase):
             ft.main()
         warn_mock.assert_called_once()
         self.assertIn('WARNING', warn_mock.call_args[0][0])
+
+    def _run_with_published(self, published_at):
+        templates = [dict(t, published_at=published_at) for t in _TEMPLATES] * 3
+        with patch('framer_templates.fetch_framer_templates', return_value=templates), \
+             patch('framer_templates.get_seen_slugs', return_value={'template-a', 'template-b'}), \
+             patch('framer_templates._warn_discord') as warn_mock, \
+             patch('builtins.open', side_effect=FileNotFoundError):
+            ft.main()
+        return warn_mock
+
+    def test_warns_when_newest_template_is_stale(self):
+        warn_mock = self._run_with_published('2026-01-01T00:00:00Z')
+        warn_mock.assert_called_once()
+        self.assertEqual(warn_mock.call_args[1]['dedup_key'], 'framer_templates:stale_feed')
+
+    def test_no_stale_warning_for_fresh_feed(self):
+        fresh = ft.datetime.now(ft.timezone.utc).isoformat()
+        self._run_with_published(fresh).assert_not_called()
 
     def test_fetch_failure_sends_discord_error_alert(self):
         """When fetch_framer_templates raises, a Discord error alert must be sent."""
