@@ -32,6 +32,11 @@ _LOG_PATH = 'logs/errors.jsonl'
 _RETENTION_DAYS = 7
 _BRANCH = 'main'
 
+# The repo owner's identity, set on the commit itself so it does not depend on
+# whatever git identity the machine running this happens to have configured.
+_COMMIT_NAME = 'Fred Moon'
+_COMMIT_EMAIL = '92265942+fredm00n@users.noreply.github.com'
+
 # Matches the retry ladder in .github/workflows/*.yml: both crons push to main
 # every 15 minutes, so a bare push loses the race often enough to matter.
 _PUSH_ATTEMPTS = 5
@@ -192,7 +197,8 @@ def main() -> int:
         print('[log_observation] Nothing changed; no commit made.')
         return 0
     _git(['add', '--'] + to_commit)
-    _git(['commit', '-m', f'chore: scheduler observation log {today} [skip ci]',
+    _git(['-c', f'user.name={_COMMIT_NAME}', '-c', f'user.email={_COMMIT_EMAIL}',
+          'commit', '-m', f'chore: scheduler observation log {today} [skip ci]',
           '--'] + to_commit)
 
     if args.no_push:

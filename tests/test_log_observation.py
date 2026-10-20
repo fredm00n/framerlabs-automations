@@ -188,6 +188,19 @@ class TestMain(unittest.TestCase):
         self.assertIn('Nothing broken today.', _read(self.obs))
         self.assertEqual(len(_read(self.log).splitlines()), 1)
 
+    def test_commits_as_the_repo_owner(self):
+        git = _FakeGit(stdout='main\n')
+        with patch.object(sys, 'argv', self._argv('--no-push')), \
+                patch.object(log_observation, '_git', git), \
+                patch.object(log_observation, 'current_branch', lambda: 'main'), \
+                patch.object(log_observation, 'changed_paths', lambda p: p):
+            self.assertEqual(log_observation.main(), 0)
+        commit = next(c for c in git.calls if 'commit' in c)
+        self.assertEqual(commit[:4], [
+            '-c', 'user.name=Fred Moon',
+            '-c', 'user.email=92265942+fredm00n@users.noreply.github.com',
+        ])
+
     def test_refuses_an_empty_note(self):
         with patch.object(sys, 'argv', ['log_observation.py', '   ']):
             self.assertEqual(log_observation.main(), 2)
